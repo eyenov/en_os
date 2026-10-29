@@ -1,0 +1,8 @@
+node_modules/
+.shots/
+.chrome-profile/
+.chrome-profile-audit/
+.chrome-report-audit/
+*.log
+.DS_Store
+Thumbs.db

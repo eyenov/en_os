@@ -1,0 +1,20 @@
+{
+  "name": "enos-ielts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "EnOS · 一句英文走完雅思四项。本地优先的雅思语境学习 Web 应用。",
+  "scripts": {
+    "start": "node server/server.mjs",
+    "dev": "node --watch server/server.mjs",
+    "test": "node --test",
+    "validate": "node scripts/validate-data.mjs",
+    "smoke": "node scripts/browser-check.mjs",
+    "mock": "node scripts/mock-provider.mjs",
+    "audit": "node scripts/overflow-check.mjs"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "license": "MIT"
+}
