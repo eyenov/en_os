@@ -3,7 +3,10 @@ import { getScene } from './scenes.js';
 const SETTINGS_KEY = 'enos.settings.v1';
 const CURRENT_KEY = 'enos.session.current.v1';
 const SESSIONS_KEY = 'enos.sessions.v1';
+const LISTENING_CURRENT_KEY = 'enos.listening.current.v1';
+const LISTENING_SESSIONS_KEY = 'enos.listening.sessions.v1';
 const MAX_SESSIONS = 8;
+const MAX_LISTENING_SESSIONS = 8;
 
 const memory = new Map();
 
@@ -117,6 +120,42 @@ export function deleteSession(id) {
   window.dispatchEvent(new CustomEvent('enos:sessions'));
 }
 
+/* ---------- Listening lab ---------- */
+
+export function getCurrentListening() {
+  const value = read(LISTENING_CURRENT_KEY, null);
+  if (!value || !value.dialogue || !Array.isArray(value.dialogue.lines)) return null;
+  return value;
+}
+
+export function saveCurrentListening(value) {
+  value.updatedAt = new Date().toISOString();
+  return write(LISTENING_CURRENT_KEY, value);
+}
+
+export function clearCurrentListening() {
+  memory.delete(LISTENING_CURRENT_KEY);
+  try { localStorage.removeItem(LISTENING_CURRENT_KEY); } catch { /* ignore */ }
+}
+
+export function listListeningSessions() {
+  const sessions = read(LISTENING_SESSIONS_KEY, []);
+  return Array.isArray(sessions) ? sessions : [];
+}
+
+export function saveListeningSession(session) {
+  const sessions = listListeningSessions().filter((item) => item.id !== session.id);
+  sessions.unshift(session);
+  write(LISTENING_SESSIONS_KEY, sessions.slice(0, MAX_LISTENING_SESSIONS));
+  window.dispatchEvent(new CustomEvent('enos:listening'));
+  return sessions.slice(0, MAX_LISTENING_SESSIONS);
+}
+
+export function deleteListeningSession(id) {
+  write(LISTENING_SESSIONS_KEY, listListeningSessions().filter((item) => item.id !== id));
+  window.dispatchEvent(new CustomEvent('enos:listening'));
+}
+
 export function updateStoredSession(session) {
   const sessions = listSessions();
   const index = sessions.findIndex((item) => item.id === session.id);
@@ -128,7 +167,7 @@ export function updateStoredSession(session) {
 }
 
 export function clearAllData() {
-  for (const key of [SETTINGS_KEY, CURRENT_KEY, SESSIONS_KEY]) {
+  for (const key of [SETTINGS_KEY, CURRENT_KEY, SESSIONS_KEY, LISTENING_CURRENT_KEY, LISTENING_SESSIONS_KEY]) {
     memory.delete(key);
     try { localStorage.removeItem(key); } catch { /* ignore */ }
   }

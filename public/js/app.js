@@ -2,12 +2,14 @@ import { aiReady, getHealth } from './api.js';
 import { getSettings } from './store.js';
 import { toast } from './ui.js';
 import { renderHome } from './views/home.js';
+import { renderListening } from './views/listening.js';
 import { renderSession } from './views/session.js';
 import { renderSettings } from './views/settings.js';
 import { renderReports } from './views/reports.js';
 
 const ROUTES = {
   home: renderHome,
+  listening: renderListening,
   session: renderSession,
   settings: renderSettings,
   reports: renderReports,

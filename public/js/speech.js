@@ -72,6 +72,14 @@ export function stopSpeaking() {
   if (synth) synth.cancel();
 }
 
+export function pauseSpeaking() {
+  if (synth) synth.pause();
+}
+
+export function resumeSpeaking() {
+  if (synth) synth.resume();
+}
+
 export function speak(text, { rate = 0.92, lang = 'en-GB', onStart, onEnd, onError } = {}) {
   if (!synth) {
     onEnd?.();
@@ -238,5 +246,46 @@ export function parseCommand(raw = '') {
   }
 
   if (/(next step|move forward)/.test(text)) return { intent: 'next' };
+  return null;
+}
+
+function parseSpokenNumber(value) {
+  const text = String(value);
+  if (/^\d+$/.test(text)) return Number(text);
+  const digits = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+  if (text === '十') return 10;
+  if (text.length === 1) return digits[text] || 0;
+  if (text.startsWith('十')) return 10 + (digits[text[1]] || 0);
+  if (text.length === 2 && text[1] === '十') return (digits[text[0]] || 0) * 10;
+  if (text.length === 3 && text[1] === '十') return (digits[text[0]] || 0) * 10 + (digits[text[2]] || 0);
+  return 0;
+}
+
+/**
+ * Commands for the listening lab. Kept separate from parseCommand so the
+ * 8-step session keeps its original vocabulary and behaviour.
+ */
+export function parseListeningCommand(raw = '') {
+  const text = String(raw).toLowerCase().replace(/[.,!?。，！？、]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+
+  if (/(finish|wrap up|结束练习|结束听力|生成结果|看结果|练习结果)/.test(text)) return { intent: 'finish' };
+  if (/(hide|blind|隐藏|不看文本|盲听)/.test(text)) return { intent: 'hide' };
+  if (/(show|显示文本|看文本|打开文本|显示原文)/.test(text)) return { intent: 'show' };
+  if (/(random|随机|随便一句|随便放一句)/.test(text)) return { intent: 'random' };
+  if (/(previous|prev|last sentence|上一句|前一句|上一个)/.test(text)) return { intent: 'prev' };
+  if (/(next|下一句|下一个|接下来)/.test(text)) return { intent: 'next' };
+  if (/(repeat|again|重播|再听一遍|再放一遍|重复)/.test(text)) return { intent: 'repeat' };
+  if (/(pause|暂停|停一下)/.test(text)) return { intent: 'pause' };
+  if (/(stop|停止|别放了|关掉声音)/.test(text)) return { intent: 'stop' };
+  if (/(slow|slower|慢速|慢一点|放慢)/.test(text)) return { intent: 'slow' };
+  if (/(normal|正常语速|常速|恢复语速|正常速度)/.test(text)) return { intent: 'normal' };
+  if (/(play|resume|continue|listen|播放|继续|开始听|听吧)/.test(text)) return { intent: 'play' };
+
+  const numeral = text.match(/(?:第|sentence|line|number)\s*([0-9]{1,2}|[一二三四五六七八九十]{1,3})\s*(?:句|个)?/);
+  if (numeral) {
+    const value = parseSpokenNumber(numeral[1]);
+    if (value > 0) return { intent: 'line', index: value - 1 };
+  }
   return null;
 }
