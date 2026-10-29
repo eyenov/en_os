@@ -9,6 +9,7 @@ import {
   HttpError,
   PROVIDERS,
   createChatCompletion,
+  extractJSON,
   publicProviders,
   readChatJSON,
   resolveRequest,
@@ -60,6 +61,17 @@ const SECURITY_HEADERS = {
 };
 
 const buckets = new Map();
+const WORD_CACHE = new Map();
+
+const WORD_SYSTEM = [
+  'You are a concise English-Chinese dictionary for Chinese learners of English.',
+  'Return ONLY a JSON object with keys:',
+  'phonetic (IPA in slashes), zh (Simplified Chinese meaning, at most 2 senses),',
+  'en (one short English definition, at most 20 words),',
+  'usage (one short English usage note or collocation, at most 16 words),',
+  'example (one short English example sentence, at most 18 words).',
+  'No markdown, no extra text.',
+].join(' ');
 
 function rateLimited(ip, limit = 240, windowMs = 60_000) {
   const now = Date.now();
@@ -198,6 +210,53 @@ async function handleExtract(req, res) {
   sendJSON(res, 200, result);
 }
 
+async function handleWord(req, res) {
+  const body = await readBody(req);
+  const word = String(body.word || '').trim().toLowerCase();
+  if (!/^[a-z][a-z'’-]{1,40}$/.test(word)) {
+    throw new HttpError(400, '请提供一个英文单词。', 'BAD_WORD');
+  }
+  const cached = WORD_CACHE.get(word);
+  if (cached) return sendJSON(res, 200, { ...cached, cached: true });
+
+  const config = resolveSearchConfig(body);
+  if (!config.apiKey) {
+    throw new HttpError(401, '还没有配置 API Key，暂时只能查本课词与核心词库。', 'NO_KEY');
+  }
+
+  const controller = new AbortController();
+  res.on('close', () => controller.abort());
+  const { response, cleanup } = await createChatCompletion({
+    ...config,
+    messages: [
+      { role: 'system', content: WORD_SYSTEM },
+      { role: 'user', content: `Word: ${word}` },
+    ],
+    temperature: 0.2,
+    maxTokens: 240,
+    json: true,
+    signal: controller.signal,
+  });
+  const { content } = await readChatJSON(response, cleanup);
+  const data = extractJSON(content) || {};
+  const zh = String(data.zh || data.chinese || '').trim();
+  if (!zh || !/[\u4e00-\u9fff]/.test(zh)) {
+    throw new HttpError(502, '词典没有返回可用的中文释义。', 'BAD_DEFINITION');
+  }
+  const entry = {
+    word,
+    phonetic: String(data.phonetic || data.ipa || '').trim().slice(0, 60),
+    zh: zh.slice(0, 160),
+    en: String(data.en || data.definition || '').trim().slice(0, 240),
+    usage: String(data.usage || data.collocation || '').trim().slice(0, 200),
+    example: String(data.example || '').trim().slice(0, 240),
+    source: 'ai',
+  };
+  if (WORD_CACHE.size >= 600) WORD_CACHE.delete(WORD_CACHE.keys().next().value);
+  WORD_CACHE.set(word, entry);
+  sendJSON(res, 200, entry);
+}
+
 async function handleStatic(req, res, urlPath) {
   let filePath;
   if (urlPath === '/' || urlPath === '/index.html') {
@@ -277,7 +336,7 @@ const server = http.createServer(async (req, res) => {
         if (!allowed.includes(origin)) throw new HttpError(403, '跨站请求被拒绝。', 'BAD_ORIGIN');
       }
       if (rateLimited(ip)) throw new HttpError(429, '请求太频繁，请稍后再试。', 'RATE_LIMIT');
-      if (urlPath === '/api/chat' || urlPath === '/api/search' || urlPath === '/api/extract') {
+      if (urlPath === '/api/chat' || urlPath === '/api/search' || urlPath === '/api/extract' || urlPath === '/api/word') {
         if (req.method !== 'POST') throw new HttpError(405, '该接口只接受 POST。', 'METHOD_NOT_ALLOWED');
         if (urlPath === '/api/chat') {
           await handleChat(req, res);
@@ -287,6 +346,11 @@ const server = http.createServer(async (req, res) => {
         if (urlPath === '/api/extract') {
           await handleExtract(req, res);
           console.log(`[api] extract ${res.statusCode} ${Date.now() - started}ms`);
+          return;
+        }
+        if (urlPath === '/api/word') {
+          await handleWord(req, res);
+          console.log(`[api] word ${res.statusCode} ${Date.now() - started}ms`);
           return;
         }
         await handleSearch(req, res);

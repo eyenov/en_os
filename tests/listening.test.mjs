@@ -126,10 +126,14 @@ test('parseDialogue rejects incomplete or non-English output', () => {
   assert.equal(parseDialogue(noTranslation), null);
 });
 
-test('dialogue prompt asks for annotation JSON', () => {
-  const prompt = buildDialoguePrompt('共享单车', { band: 5.5, scene: { en: 'Tech', setting: 'a start-up lab after midnight' } });
+test('dialogue prompt asks for annotation JSON and anchors the topic', () => {
+  const prompt = buildDialoguePrompt('共享单车', { band: 5.5 });
   assert.match(prompt.user, /共享单车/);
   assert.match(prompt.user, /5\.5/);
+  assert.doesNotMatch(prompt.user, /Scene flavour|lab|night/i);
+  assert.match(prompt.system, /STRICTLY about the user topic/);
+  assert.match(prompt.system, /first turn must name the topic/);
+  assert.match(prompt.system, /Do not change the topic/);
   assert.match(prompt.system, /"lines"/);
   assert.match(prompt.system, /translation/);
   assert.match(prompt.system, /JSON/);

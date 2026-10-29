@@ -191,10 +191,15 @@ export function parseDialogue(raw, { topic = '', band = 6, source = 'ai' } = {})
 }
 
 /** Prompt for one JSON call: short turns with translation, syntax chunks and vocabulary. */
-export function buildDialoguePrompt(topic, { band = 6, scene = null } = {}) {
+export function buildDialoguePrompt(topic, { band = 6 } = {}) {
   const system = [
     'You are an IELTS listening coach for lower-intermediate learners (Band 5.0-6.0).',
-    'Write ONE natural two-person dialogue in English about the user topic, 10-12 turns, 200-280 words in total.',
+    'Write ONE natural two-person dialogue in English that is STRICTLY about the user topic, 10-12 turns, 200-280 words in total.',
+    'The first turn must name the topic explicitly in natural English, so the learner can hear what the conversation is about.',
+    'If the input is a question, answer that question through the dialogue and keep every turn relevant to it.',
+    'Do not change the topic and do not invent a setting, location, time of day, or extra characters that the topic does not require.',
+    'Keep the situation neutral and everyday unless the topic itself is about a specific place or time.',
+    'Do not add opinions, advice, moral judgements, or facts that are not needed to discuss the topic; let the two speakers reason from the topic itself.',
     'Each turn must be exactly ONE sentence of 10-20 words, with common vocabulary and clear punctuation.',
     'Alternate speakers A and B, starting with A.',
     'For every turn provide:',
@@ -208,13 +213,11 @@ export function buildDialoguePrompt(topic, { band = 6, scene = null } = {}) {
     '{"title":"English title","lines":[{"speaker":"A","text":"...","zh":"...","structure":"...","chunks":[{"text":"...","role":"主语"}],"words":[{"term":"...","pos":"n.","zh":"...","gloss":"...","usage":"..."}],"grammar":"..."}]}',
     'No markdown, no code fence, no explanation outside the JSON.',
   ].join(' ');
-  const sceneLine = scene ? `Scene flavour: ${scene.en}, ${scene.setting}.` : '';
   const user = [
-    `Topic: ${topic}`,
+    `Topic or question: ${topic}`,
     `Target band: ${Number(band).toFixed(1)}`,
-    sceneLine,
     'Return the JSON now.',
-  ].filter(Boolean).join('\n');
+  ].join('\n');
   return { system, user };
 }
 
@@ -527,7 +530,7 @@ export function localDialogue(topic = '', { band = 5.5 } = {}) {
   const cleanTopic = String(topic || '').trim();
   return {
     id: `lst-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-    title: /[A-Za-z]{3,}/.test(cleanTopic) ? `${cleanTopic} · Listening practice` : 'A short meeting · Listening practice',
+    title: cleanTopic ? `${cleanTopic} · Listening practice` : 'A short conversation · Listening practice',
     topic: cleanTopic,
     band: Number(band) || 5.5,
     source: 'local',

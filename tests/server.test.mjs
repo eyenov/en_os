@@ -93,7 +93,15 @@ before(async () => {
       ? 'urban shade'
       : system.includes('short IELTS reading passages')
         ? 'Mock article about shade.'
-        : 'ok';
+        : system.includes('English-Chinese dictionary')
+          ? JSON.stringify({
+            phonetic: '/ʃeɪd/',
+            zh: '阴凉处',
+            en: 'an area where the sun does not shine',
+            usage: 'in the shade of a tree',
+            example: 'We sat in the shade.',
+          })
+          : 'ok';
     return json(res, 200, {
       model: 'mock-model',
       choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
@@ -227,6 +235,9 @@ test('invalid JSON and wrong methods are handled', async () => {
 
   const extractGet = await fetch(`${BASE}/api/extract`);
   assert.equal(extractGet.status, 405);
+
+  const wordGet = await fetch(`${BASE}/api/word`);
+  assert.equal(wordGet.status, 405);
 });
 
 test('native search extracts a real English excerpt from the top result', async () => {
@@ -290,6 +301,37 @@ test('/api/extract rejects pages without usable English prose', async () => {
   const missing = await post('/api/extract', {});
   assert.equal(missing.status, 400);
   assert.equal((await missing.json()).error.code, 'BAD_URL');
+});
+
+test('/api/word looks up a word through the chat provider', async () => {
+  const response = await post('/api/word', {
+    provider: 'custom', apiKey: 'sk-test', baseUrl: MOCK, model: 'mock',
+    word: 'shade',
+  });
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.equal(data.word, 'shade');
+  assert.equal(data.zh, '阴凉处');
+  assert.ok(data.en);
+  assert.equal(data.source, 'ai');
+});
+
+test('/api/word without a key is rejected', async () => {
+  const response = await post('/api/word', {
+    provider: 'custom', baseUrl: MOCK, model: 'mock',
+    word: 'garden',
+  });
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).error.code, 'NO_KEY');
+});
+
+test('/api/word rejects non-words', async () => {
+  const response = await post('/api/word', {
+    provider: 'custom', apiKey: 'sk-test', baseUrl: MOCK, model: 'mock',
+    word: 'hello world!',
+  });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'BAD_WORD');
 });
 
 test('unknown API route returns JSON 404', async () => {

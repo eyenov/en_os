@@ -167,6 +167,17 @@ export async function extractArticle(url) {
   return response.json();
 }
 
+export async function lookupWord(word, { settings = getSettings() } = {}) {
+  const config = configFor(settings);
+  const response = await fetch('/api/word', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ ...config, word }),
+  });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}
+
 export async function testConnection(settings = getSettings()) {
   const started = performance.now();
   const data = await chat({

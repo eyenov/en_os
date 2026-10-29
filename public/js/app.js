@@ -1,6 +1,7 @@
 import { aiReady, getHealth } from './api.js';
 import { getSettings } from './store.js';
 import { toast } from './ui.js';
+import { installLookup } from './lookup.js';
 import { renderHome } from './views/home.js';
 import { renderListening } from './views/listening.js';
 import { renderSession } from './views/session.js';
@@ -106,6 +107,11 @@ window.addEventListener('unhandledrejection', (event) => {
 });
 
 document.getElementById('status-pill')?.addEventListener('click', () => navigate('settings'));
+
+installLookup({
+  root: document.getElementById('app'),
+  button: document.getElementById('lookup-toggle'),
+});
 
 (async () => {
   const health = await Promise.race([

@@ -42,6 +42,7 @@ export const DEFAULT_SETTINGS = {
   scene: 'music',
   band: 6.5,
   name: '',
+  lookup: true,
 };
 
 let settingsCache = null;

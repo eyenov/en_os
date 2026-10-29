@@ -7,7 +7,6 @@ import {
   saveCurrentListening,
   saveListeningSession,
 } from '../store.js';
-import { getScene } from '../scenes.js';
 import {
   buildDialoguePrompt,
   buildListeningResult,
@@ -27,6 +26,7 @@ import {
   ttsSupported,
 } from '../speech.js';
 import { formatDuration } from '../scoring.js';
+import { clearLessonVocabulary, setLessonVocabulary } from '../lookup.js';
 import { h, icon, toast } from '../ui.js';
 
 const PHASES = [
@@ -69,7 +69,6 @@ function sourceLabel(source) {
 
 export async function renderListening(ctx) {
   const settings = getSettings();
-  const scene = getScene(settings.scene);
   const saved = getCurrentListening();
 
   let dialogue = saved?.dialogue || null;
@@ -99,6 +98,7 @@ export async function renderListening(ctx) {
   if (dialogue) {
     current = Math.max(0, Math.min(dialogue.lines.length - 1, current));
   }
+  setLessonVocabulary(dialogue);
 
   /* ---------- setup ---------- */
 
@@ -119,7 +119,7 @@ export async function renderListening(ctx) {
   const topicInput = h('input', {
     class: 'input',
     type: 'text',
-    placeholder: '输入一个话题，例如：在咖啡店点单 / 一次面试',
+    placeholder: '输入话题或问题，例如：在咖啡店点单 / 为什么城市需要更多树？',
     'aria-label': '听力话题',
     onkeydown: (event) => { if (event.key === 'Enter') generate(); },
   });
@@ -152,13 +152,13 @@ export async function renderListening(ctx) {
     h('div', { class: 'card-head' },
       h('div', {},
         h('p', { class: 'eyebrow' }, 'STEP 0 · 选一个话题'),
-        h('h2', {}, '先定一个你想听懂的日常场景'),
-        h('p', {}, '生成 12 句双人对话：先看文本，再慢速逐句讲解结构、单词和语法，接着正常语速盲听，最后逐句精听。')),
+        h('h2', {}, '输入你想练的话题或问题'),
+        h('p', {}, '对话只围绕你的输入生成：先看文本，再慢速逐句讲解结构、单词和语法，接着正常语速盲听，最后逐句精听。')),
       h('span', { class: 'badge accent' }, '约 5 分钟')),
     h('div', { class: 'listen-topic-row' }, topicInput, topicMic, topicLang),
     h('div', { class: 'listen-options' },
       h('label', { class: 'field-inline' }, '难度 ', bandSelect),
-      h('span', { class: 'small muted' }, '难度影响句子长度和词汇；中文话题需要 API Key 才能生成定制对话。')),
+      h('span', { class: 'small muted' }, '生成只围绕你输入的话题或问题，不套用首页场景；中文话题需要 API Key。')),
     exampleChips,
     h('div', { style: 'margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap' }, generateBtn, genStatus),
     !ttsSupported ? h('div', { class: 'callout warn', style: 'margin-top:12px', html: `${icon('info', 16)}<span>当前浏览器不支持语音朗读，仍可阅读文本与对照翻译，但无法播放音频。建议使用 Chrome 或 Edge。</span>` }) : null,
@@ -288,6 +288,7 @@ export async function renderListening(ctx) {
       h('div', { class: 'listen-head-side' },
         h('span', { class: `badge ${dialogue.source === 'ai' ? 'accent' : 'warn'}` }, sourceLabel(dialogue.source)),
         h('span', { class: 'badge' }, `已练 ${formatDuration(stats.seconds)}`),
+        h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: regenerate }, '重新生成'),
         h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: resetAll }, '换话题')));
     if (dialogue.source === 'local') {
       workHead.append(h('p', { class: 'listen-local-note tiny faint' }, '本地模板是通用对话；配置 API Key 后会按你的话题重新生成。'));
@@ -892,7 +893,7 @@ export async function renderListening(ctx) {
       let next = null;
       if (aiReady(settings)) {
         try {
-          const prompt = buildDialoguePrompt(topic, { band, scene });
+          const prompt = buildDialoguePrompt(topic, { band });
           const data = await chat({
             messages: [
               { role: 'system', content: prompt.system },
@@ -900,7 +901,7 @@ export async function renderListening(ctx) {
             ],
             json: true,
             maxTokens: 4800,
-            temperature: 0.6,
+            temperature: 0.45,
           });
           next = parseDialogue(data.content, { topic, band, source: 'ai' });
           if (!next) throw new Error('返回的对话格式不完整');
@@ -914,6 +915,7 @@ export async function renderListening(ctx) {
       phase = 'preview';
       current = 0;
       openStructures.clear();
+      setLessonVocabulary(dialogue);
       setStats(freshStats());
       finishedAt = null;
       resultSession = null;
@@ -993,6 +995,15 @@ export async function renderListening(ctx) {
     paint();
   }
 
+  function regenerate() {
+    if (!dialogue) return;
+    const topic = dialogue.topic || topicInput.value.trim();
+    if (!topic) return toast('先输入一个话题。', 'err');
+    topicInput.value = topic;
+    toast('正在按同一话题重新生成…', 'info', 2200);
+    generate();
+  }
+
   function resetAll() {
     clearPlayTimer();
     stopSpeaking();
@@ -1014,6 +1025,7 @@ export async function renderListening(ctx) {
     topicMic.classList.remove('listening');
     reveal = false;
     clearCurrentListening();
+    clearLessonVocabulary();
     paint();
     topicInput.focus();
   }
@@ -1035,6 +1047,7 @@ export async function renderListening(ctx) {
       createdAt: session.createdAt,
       lines: session.lines,
     };
+    setLessonVocabulary(dialogue);
     setStats(session.stats || freshStats());
     finishedAt = session.finishedAt || null;
     phase = 'result';
