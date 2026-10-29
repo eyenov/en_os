@@ -157,6 +157,16 @@ export async function searchTopic(query, { count = 5, summarize = true, settings
   return response.json();
 }
 
+export async function extractArticle(url) {
+  const response = await fetch('/api/extract', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}
+
 export async function testConnection(settings = getSettings()) {
   const started = performance.now();
   const data = await chat({

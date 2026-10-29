@@ -15,6 +15,7 @@ import {
   validateBaseUrl,
 } from './providers.mjs';
 import { searchWeb } from './search.mjs';
+import { extractFromUrl } from './extract.mjs';
 
 const ROOT = path.dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -187,6 +188,16 @@ async function handleSearch(req, res) {
   sendJSON(res, 200, result);
 }
 
+async function handleExtract(req, res) {
+  const body = await readBody(req);
+  const url = String(body.url || '').trim();
+  if (!url) throw new HttpError(400, '缺少文章链接。', 'BAD_URL');
+  const result = await extractFromUrl(url, {
+    allowLocal: process.env.ENOS_ALLOW_LOCAL_FETCH === '1',
+  });
+  sendJSON(res, 200, result);
+}
+
 async function handleStatic(req, res, urlPath) {
   let filePath;
   if (urlPath === '/' || urlPath === '/index.html') {
@@ -266,11 +277,16 @@ const server = http.createServer(async (req, res) => {
         if (!allowed.includes(origin)) throw new HttpError(403, '跨站请求被拒绝。', 'BAD_ORIGIN');
       }
       if (rateLimited(ip)) throw new HttpError(429, '请求太频繁，请稍后再试。', 'RATE_LIMIT');
-      if (urlPath === '/api/chat' || urlPath === '/api/search') {
+      if (urlPath === '/api/chat' || urlPath === '/api/search' || urlPath === '/api/extract') {
         if (req.method !== 'POST') throw new HttpError(405, '该接口只接受 POST。', 'METHOD_NOT_ALLOWED');
         if (urlPath === '/api/chat') {
           await handleChat(req, res);
           console.log(`[api] chat ${res.statusCode} ${Date.now() - started}ms`);
+          return;
+        }
+        if (urlPath === '/api/extract') {
+          await handleExtract(req, res);
+          console.log(`[api] extract ${res.statusCode} ${Date.now() - started}ms`);
           return;
         }
         await handleSearch(req, res);

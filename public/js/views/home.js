@@ -1,10 +1,18 @@
-import { aiReady, loadBank, searchTopic } from '../api.js';
+import { aiReady, extractArticle, loadBank, searchTopic } from '../api.js';
 import { getCurrentSession, clearCurrentSession, getSettings, listSessions, saveCurrentSession, saveSettings } from '../store.js';
 import { createSession, MODULE_MAP, STEP_SPECS } from '../engine.js';
 import { BANDS, SCENES, getScene } from '../scenes.js';
 import { Listener, parseCommand, recognitionSupported, stopSpeaking } from '../speech.js';
 import { formatDate, h, icon, modal, toast } from '../ui.js';
 import { sceneArt } from '../art.js';
+
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
 
 const EXAMPLES = [
   {
@@ -33,6 +41,7 @@ export async function renderHome(ctx) {
   let query = '';
   let listener = null;
   let searchBusy = false;
+  let busyExcerpt = false;
 
   const el = h('div', { class: 'home' });
 
@@ -100,13 +109,14 @@ export async function renderHome(ctx) {
 
   async function runSearch() {
     if (searchBusy) return;
-    const value = query.trim();
+    const value = String(queryInput?.value ?? query ?? '').trim();
+    query = value;
     if (value.length < 2) return toast('先输入一个话题，例如 “urban gardening”。', 'err');
     searchBusy = true;
     searchBtn.disabled = true;
     searchBtn.innerHTML = `<span class="spinner dark"></span> 检索中`;
     resultsBox.innerHTML = '';
-    resultsBox.append(h('div', { class: 'search-note' }, '正在联网检索，并整理成适合精读的短文…'));
+    resultsBox.append(h('div', { class: 'search-note' }, '正在联网检索，并抓取正文、按句子边界截取英文原文…'));
     try {
       const data = await searchTopic(value, { count: 5, summarize: true });
       renderSearchResults(data);
@@ -131,6 +141,18 @@ export async function renderHome(ctx) {
       duckduckgo: '网页检索',
       'ai-generated': 'AI 生成（非实时）',
     }[data.source] || data.source;
+    const modeLabel = data.mode === 'excerpt'
+      ? { text: `原文截取${data.articleMeta?.wordCount ? ` · ${data.articleMeta.wordCount} 词` : ''}`, kind: 'ok' }
+      : data.mode === 'rewrite'
+        ? { text: 'AI 整理（非原文）', kind: 'warn' }
+        : data.mode === 'snippets'
+          ? { text: '摘要拼接（非原文）', kind: 'warn' }
+          : null;
+
+    if (data.translated && data.usedQuery) {
+      resultsBox.append(h('div', { class: 'search-note' },
+        `中文话题已转成英文检索词：`, h('strong', {}, data.usedQuery)));
+    }
     if (data.warnings?.length) {
       resultsBox.append(h('div', { class: 'callout warn', html: `${icon('info', 16)}<span>${data.warnings.join(' ')}</span>` }));
     }
@@ -140,33 +162,81 @@ export async function renderHome(ctx) {
     }
     resultsBox.append(h('div', { class: 'search-note' },
       h('span', { class: 'badge accent' }, `来源：${sourceLabel}`),
-      data.degraded ? h('span', { class: 'badge warn', style: 'margin-left:6px' }, '非实时') : null,
-      ' 点击任意结果，把整理后的短文填入输入框。'));
-    data.items?.forEach((item) => {
-      resultsBox.append(h('button', {
-        class: 'search-result',
-        type: 'button',
-        onclick: () => {
-          applyText(data.article, `联网检索 · ${data.query}`);
-          textarea.focus();
-          textarea.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          toast('已填入检索结果，可直接开始学习。', 'ok');
-        },
-      },
-      h('strong', {}, item.title || data.query),
-      h('span', {}, item.snippet || ''),
-      h('em', {}, `${item.site || item.engine || 'web'} · ${data.source}`)));
-    });
-    if (data.items?.length) {
-      resultsBox.append(h('button', {
-        class: 'btn btn-soft btn-sm',
-        type: 'button',
-        onclick: () => {
-          applyText(data.article, `联网检索 · ${data.query}`);
-          toast('已填入检索结果。', 'ok');
-        },
-      }, '使用这篇整理稿'));
+      modeLabel ? h('span', { class: `badge ${modeLabel.kind}`, style: 'margin-left:6px' }, modeLabel.text) : null,
+      h('span', {}, data.mode === 'excerpt'
+        ? ' 点击任意结果，抓取该篇原文并直接开始学习。'
+        : ' 点击任意结果可尝试抓取原文；也可以直接用下面的整理稿。')));
+    if (data.mode === 'excerpt') {
+      resultsBox.append(h('details', { class: 'excerpt-preview' },
+        h('summary', {}, `预览原文${data.articleMeta?.title ? `：${data.articleMeta.title}` : ''}`),
+        h('p', {}, `${data.article.slice(0, 600)}${data.article.length > 600 ? '…' : ''}`)));
     }
+    const usable = /\b[A-Za-z]{3,}\b/.test(data.article);
+    if (!usable) {
+      resultsBox.append(h('div', { class: 'callout warn', html: `${icon('info', 16)}<span>没有截取到英文原文。中文话题需要配置 API Key 自动转成英文检索词，或直接输入英文关键词。</span>` }));
+    }
+    data.items?.forEach((item) => {
+      const button = h('button', { class: 'search-result', type: 'button' },
+        h('strong', {}, item.title || data.query),
+        h('span', {}, item.snippet || ''),
+        h('em', {}, `${item.site || item.engine || 'web'} · 点击截取原文`));
+      button.addEventListener('click', () => useOriginal(item, button, data));
+      resultsBox.append(button);
+    });
+    resultsBox.append(h('button', {
+      class: 'btn btn-soft btn-sm',
+      type: 'button',
+      disabled: !usable,
+      onclick: () => startWithArticle(data),
+    }, data.mode === 'excerpt' ? '用这篇原文开始学习' : '使用整理稿（非原文）'));
+  }
+
+  async function useOriginal(item, button, data) {
+    if (busyExcerpt) return;
+    if (!item.url) return toast('这条结果没有可抓取的链接。', 'err');
+    busyExcerpt = true;
+    const previous = button.innerHTML;
+    button.disabled = true;
+    button.classList.add('busy');
+    button.innerHTML = `<strong>正在抓取原文…</strong><span>${item.site || item.url}</span>`;
+    try {
+      const cached = data?.mode === 'excerpt' && data.article && item.url === data.articleMeta?.url;
+      const article = cached
+        ? { excerpt: data.article, wordCount: data.articleMeta.wordCount, url: item.url, title: data.articleMeta.title }
+        : await extractArticle(item.url);
+      const label = article.url ? hostOf(article.url) : item.site || '网页';
+      applyText(article.excerpt, `原文截取 · ${label}`);
+      if (startBtn.disabled) {
+        button.disabled = false;
+        button.classList.remove('busy');
+        button.innerHTML = previous;
+        return toast('这篇没有截取到足够的英文，换一篇试试。', 'err');
+      }
+      toast(`已截取 ${article.wordCount} 词英文原文，准备开始学习。`, 'ok');
+      await start();
+      if (button.isConnected) {
+        button.disabled = false;
+        button.classList.remove('busy');
+        button.innerHTML = previous;
+      }
+    } catch (error) {
+      button.disabled = false;
+      button.classList.remove('busy');
+      button.innerHTML = previous;
+      toast(error.message || '抓取原文失败。', 'err');
+    } finally {
+      busyExcerpt = false;
+    }
+  }
+
+  async function startWithArticle(data) {
+    if (!data.article) return;
+    const label = data.mode === 'excerpt'
+      ? `原文截取 · ${data.articleMeta?.site || hostOf(data.articleMeta?.url || '') || data.usedQuery || data.query}`
+      : `联网整理 · ${data.usedQuery || data.query}`;
+    applyText(data.article, label);
+    if (startBtn.disabled) return toast('这篇内容不是足够的英文，换一篇试试。', 'err');
+    await start();
   }
 
   /* ---------- Voice input ---------- */
@@ -247,13 +317,14 @@ export async function renderHome(ctx) {
     type: 'search',
     placeholder: 'Search a topic, e.g. urban gardening, sleep science…',
     'aria-label': '搜索话题',
+    oninput: (event) => { query = event.target.value; },
     onkeydown: (event) => { if (event.key === 'Enter') runSearch(); },
   });
   const searchBtn = h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: runSearch }, '搜索并精读');
   const resultsBox = h('div', { class: 'search-results' });
   const searchPanel = h('div', { class: 'search-panel hidden' },
     h('div', { class: 'search-row' }, queryInput, searchBtn),
-    h('div', { class: 'search-note' }, '联网检索会用你配置的服务商；没有 Key 时自动改用维基百科与网页兜底。'),
+    h('div', { class: 'search-note' }, '检索 → 抓取网页正文 → 按句子边界截取 150–220 词英文原文。中文话题需配置 API Key 才会自动转成英文检索词；没有 Key 时请直接输入英文。'),
     resultsBox,
   );
 

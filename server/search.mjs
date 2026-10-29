@@ -1,6 +1,8 @@
 import { createChatCompletion, HttpError, readChatJSON } from './providers.mjs';
+import { buildExcerpt, countWords, extractFromUrl, isEnglishText } from './extract.mjs';
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36 EnOS/1.0';
+const CJK_QUERY_RE = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/;
 
 function decodeEntities(value = '') {
   return String(value)
@@ -200,11 +202,88 @@ async function generateArticle({ provider, providerId, apiKey, baseUrl, model, q
   return content.trim();
 }
 
+/** Turn a Chinese topic into an English query so the excerpt is real English prose. */
+async function translateQuery({ provider, providerId, apiKey, baseUrl, model, query }) {
+  const system = [
+    'You turn a search topic into a short English web search query.',
+    'Reply with the English query only, 2 to 8 words, no quotes, no trailing punctuation, no explanation.',
+  ].join(' ');
+  const { response, cleanup } = await createChatCompletion({
+    provider, providerId, apiKey, baseUrl, model,
+    messages: [{ role: 'system', content: system }, { role: 'user', content: query }],
+    temperature: 0,
+    maxTokens: 40,
+  });
+  const { content } = await readChatJSON(response, cleanup);
+  const cleaned = content.trim().replace(/^["'`“”]+|["'`“”]+$/g, '').replace(/\s+/g, ' ');
+  if (!cleaned || /[^\x20-\x7E]/.test(cleaned)) return '';
+  if (cleaned.split(' ').length > 10) return '';
+  return cleaned;
+}
+
+/**
+ * Walk the ranked results and take the first one that yields a faithful
+ * English excerpt. Wikipedia intros are used in place; other pages are fetched.
+ */
+async function pickExcerpt(items, { allowLocal = false, warnings = [], limit = 3 } = {}) {
+  const candidates = items.slice(0, limit);
+  if (!candidates.length) return null;
+  const outcomes = await Promise.allSettled(candidates.map(async (item) => {
+    if (item.engine === 'wikipedia' && countWords(item.content) >= 80) {
+      const { text, wordCount } = buildExcerpt(item.content);
+      if (text && isEnglishText(text)) {
+        return { item, url: item.url, title: item.title, excerpt: text, wordCount };
+      }
+      throw new Error('维基导语不是英文');
+    }
+    const data = await extractFromUrl(item.url, { allowLocal, timeoutMs: 9000 });
+    return {
+      item,
+      url: data.url,
+      title: data.title || item.title,
+      excerpt: data.excerpt,
+      wordCount: data.wordCount,
+    };
+  }));
+
+  for (const outcome of outcomes) {
+    if (outcome.status === 'fulfilled') return outcome.value;
+  }
+
+  const detail = outcomes
+    .filter((outcome) => outcome.status === 'rejected')
+    .map((outcome) => outcome.reason?.message || '抓取失败')
+    .slice(0, 2)
+    .join('；');
+  warnings.push(`原文抓取失败${detail ? `（${detail}）` : ''}。`);
+  return null;
+}
+
 export async function searchWeb({ provider, providerId, apiKey, baseUrl, model, query, count = 5, summarize = true }) {
-  const cleanQuery = String(query || '').trim().slice(0, 120);
-  if (cleanQuery.length < 2) throw new HttpError(400, '搜索词太短。', 'BAD_QUERY');
+  const requested = String(query || '').trim().slice(0, 120);
+  if (requested.length < 2) throw new HttpError(400, '搜索词太短。', 'BAD_QUERY');
 
   const warnings = [];
+  let searchQuery = requested;
+  let translated = false;
+
+  // A Chinese topic searched on English sources would return Chinese pages,
+  // which can never become an English excerpt. Translate it first when a key allows.
+  if (apiKey && CJK_QUERY_RE.test(requested)) {
+    try {
+      const english = await translateQuery({ provider, providerId, apiKey, baseUrl, model, query: requested });
+      if (english) {
+        searchQuery = english;
+        translated = true;
+      } else {
+        warnings.push('没能把中文话题转成英文检索词，已按原词检索。');
+      }
+    } catch (error) {
+      warnings.push(`中文话题自动翻译失败（${error.message}），已按原词检索。`);
+    }
+  }
+  const cleanQuery = searchQuery;
+
   let items = [];
   let source = 'none';
 
@@ -240,15 +319,39 @@ export async function searchWeb({ provider, providerId, apiKey, baseUrl, model, 
 
   let degraded = false;
   let article = '';
-  if (items.length && summarize && apiKey) {
-    try {
-      article = await composeWithModel({ provider, providerId, apiKey, baseUrl, model, query: cleanQuery, items });
-    } catch (error) {
-      warnings.push(`整理成学习文章失败（${error.message}），已改用检索摘要。`);
+  let mode = 'none';
+  let articleMeta = null;
+
+  if (items.length) {
+    const picked = await pickExcerpt(items, {
+      allowLocal: process.env.ENOS_ALLOW_LOCAL_FETCH === '1',
+      warnings,
+    });
+    if (picked) {
+      article = picked.excerpt;
+      mode = 'excerpt';
+      articleMeta = {
+        url: picked.url,
+        title: picked.title || '',
+        site: picked.item.site || '',
+        engine: picked.item.engine || '',
+        wordCount: picked.wordCount,
+      };
+    } else if (summarize && apiKey) {
+      try {
+        article = await composeWithModel({ provider, providerId, apiKey, baseUrl, model, query: cleanQuery, items });
+        mode = 'rewrite';
+        warnings.push('没能截取网页原文，以下内容由模型根据检索摘要整理，不是原文。');
+      } catch (error) {
+        article = composeLocalArticle(cleanQuery, items);
+        mode = 'snippets';
+        warnings.push(`模型整理也失败（${error.message}），以下为检索摘要拼接。`);
+      }
+    } else {
       article = composeLocalArticle(cleanQuery, items);
+      mode = 'snippets';
+      warnings.push('没能截取网页原文，以下为检索摘要拼接；可以直接打开原网页，或配置 API Key 让模型整理。');
     }
-  } else if (items.length) {
-    article = composeLocalArticle(cleanQuery, items);
   }
 
   if (!items.length) {
@@ -262,6 +365,7 @@ export async function searchWeb({ provider, providerId, apiKey, baseUrl, model, 
     source = 'ai-generated';
     try {
       article = await generateArticle({ provider, providerId, apiKey, baseUrl, model, query: cleanQuery });
+      mode = 'rewrite';
       warnings.push('没有拿到实时网页结果，以下内容由模型根据通识生成，请当作泛读材料而非新闻。');
     } catch (error) {
       throw new HttpError(502, `联网检索失败，模型生成也失败了：${error.message}`, 'SEARCH_FAILED');
@@ -269,9 +373,13 @@ export async function searchWeb({ provider, providerId, apiKey, baseUrl, model, 
   }
 
   return {
-    query: cleanQuery,
+    query: requested,
+    usedQuery: cleanQuery,
+    translated,
     items: items.slice(0, 6).map(({ content, ...rest }) => ({ ...rest, content: content.slice(0, 1200) })),
     article,
+    mode,
+    articleMeta,
     source,
     degraded,
     warnings,
