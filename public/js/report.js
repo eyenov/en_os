@@ -43,7 +43,7 @@ function radarChart(modules) {
   }).join('');
   return `<svg viewBox="0 0 ${size} ${size}" role="img" aria-label="四项能力雷达图">
     ${rings}${axes}
-    <polygon points="${shape}" fill="rgba(73,56,239,0.16)" stroke="#4938ef" stroke-width="1.8"/>
+    <polygon points="${shape}" fill="rgba(14,143,120,0.16)" stroke="#0e8f78" stroke-width="1.8"/>
     ${dots}${labels}
   </svg>`;
 }

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="EnOS knowledge mark">
+  <defs>
+    <linearGradient id="bg" x1="70" y1="40" x2="440" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFEFA"/>
+      <stop offset="0.55" stop-color="#FFFDF7"/>
+      <stop offset="1" stop-color="#F8F0E2"/>
+    </linearGradient>
+    <linearGradient id="teal" x1="110" y1="420" x2="420" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#159A84"/>
+      <stop offset="0.55" stop-color="#22BEA5"/>
+      <stop offset="1" stop-color="#54D7B9"/>
+    </linearGradient>
+    <linearGradient id="coral" x1="190" y1="440" x2="470" y2="130" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E95861"/>
+      <stop offset="0.55" stop-color="#F57875"/>
+      <stop offset="1" stop-color="#FFA08D"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="270" y1="450" x2="490" y2="210" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F0B53C"/>
+      <stop offset="0.6" stop-color="#F5C653"/>
+      <stop offset="1" stop-color="#FFDE83"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#7D6A46" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <rect x="18" y="18" width="476" height="476" rx="116" fill="url(#bg)" filter="url(#soft)"/>
+  <rect x="18.5" y="18.5" width="475" height="475" rx="115.5" fill="none" stroke="#E9E0CF" stroke-opacity="0.85"/>
+
+  <g fill="none" stroke-linecap="round">
+    <path d="M132 424 C108 322 160 238 272 190 C346 159 394 108 418 54" stroke="url(#teal)" stroke-width="58"/>
+    <path d="M210 432 C202 352 252 292 342 248 C404 217 442 178 464 130" stroke="url(#coral)" stroke-width="44"/>
+    <path d="M288 440 C288 384 324 346 398 310 C444 288 474 254 490 214" stroke="url(#amber)" stroke-width="34"/>
+  </g>
+
+  <g transform="translate(42 50)">
+    <path d="M8 18 C34 2 62 8 90 26 L90 82 C64 66 34 62 8 78 Z" fill="#FFF6DF" stroke="#0E7F6C" stroke-width="6" stroke-linejoin="round"/>
+    <path d="M90 26 C118 8 146 2 172 18 L172 78 C146 62 116 66 90 82 Z" fill="#FFF6DF" stroke="#0E7F6C" stroke-width="6" stroke-linejoin="round"/>
+    <path d="M90 26 L90 82" stroke="#0E7F6C" stroke-width="6" stroke-linecap="round"/>
+    <path d="M28 34 C48 24 66 26 78 38" stroke="#F4C453" stroke-width="4" stroke-linecap="round"/>
+    <path d="M102 38 C114 26 132 24 152 34" stroke="#F4C453" stroke-width="4" stroke-linecap="round"/>
+  </g>
+</svg>

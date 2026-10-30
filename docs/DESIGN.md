@@ -385,7 +385,7 @@ YouTube 的机器人验证是**瞬时**的：同一个视频可能第一次 `LOG
 
 `/videos.html` 换成独立的左右工作台，不复用学习页的顶部导航：
 
-- 最左 76px 工具栏只保留 **视频 / 对话**；旧的学习、听力、报告、设置入口不进入这个工作台；
+- 最左 76px 浅色工具栏只保留 **视频 / 对话**；激活态用青绿浅底；旧的学习、听力、报告、设置入口不进入这个工作台；
 - 顶部 42px 标签条：**YouTube / 播客 / 图书**；播客与图书暂未接入，只显示占位；
 - 视频视图 = 250px 频道导航树 + 右侧预览。导航树可整体收起（`≤ 0px` 列宽，标签条出现“频道”按钮恢复），频道节点也可展开视频子列表；
 - 预览卡片使用真实缩略图与 `title / channel / description / views / published / duration / CC`；
@@ -430,3 +430,15 @@ YouTube 的机器人验证是**瞬时**的：同一个视频可能第一次 `LOG
 - `GET /api/books/file?category=&date=&format=` 通过服务端代理下载原始文件，带 `Content-Disposition`；
 - 前端左侧杂志树过滤，右侧书卡；点卡片进入内嵌阅读器：左侧章节目录、右侧正文、上一章/下一章、顶部下载与 GitHub 源；
 - 解析后的书缓存在内存中（最多 3 本），大 EPUB 在首次打开时可能需要 30–60 秒。
+
+---
+
+## 19. 品牌与图标
+
+参考 `D:\code\toolforge\src-tauri\icons\icon.png` 的三条流动笔触（青绿、珊瑚、琥珀），EnOS 在其基础上加入「翻开的书」作为知识标识：
+
+- 三条笔触保留参考图的有机曲线、圆角和留白；
+- 左上角放一枚更小的浅色翻书标识，奶油书页 + 深 teal 细边 + 琥珀书页线，表达知识但不压过主图形；
+- 主色：teal `#1ab49b`，深 teal `#0e8f78`，coral `#f57875`，amber `#f5c653`，纸色 `#fffdf8`；
+- 站点 `--accent` 改为深 teal，`--accent-2` 改为 coral，`--lime` 改为 amber；页头增加三色渐变细线，首页 music 场景改为青绿色系；
+- 资产：`public/icon.svg`、`icon-512.png`、`icon-192.png`、`icon-32.png`、`apple-touch-icon.png`、`favicon.svg`。

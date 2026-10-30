@@ -919,30 +919,30 @@ function drawPodcastWave() {
     if (lineWidth) { ctx.strokeStyle = color; ctx.lineWidth = lineWidth; ctx.stroke(); }
   };
 
-  curve('rgba(73,56,239,.38)', 1.2, 'rgba(73,56,239,.16)');
+  curve('rgba(14,143,120,.38)', 1.2, 'rgba(14,143,120,.16)');
   if (playX > 0) {
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, 0, playX, height);
     ctx.clip();
-    curve('rgba(73,56,239,.95)', 1.8, 'rgba(73,56,239,.40)');
+    curve('rgba(14,143,120,.95)', 1.8, 'rgba(14,143,120,.40)');
     ctx.restore();
   }
   ctx.beginPath();
-  ctx.strokeStyle = 'rgba(73,56,239,.1)';
+  ctx.strokeStyle = 'rgba(14,143,120,.1)';
   ctx.lineWidth = 1;
   ctx.moveTo(0, mid);
   ctx.lineTo(width, mid);
   ctx.stroke();
   if (playX >= 0) {
     ctx.beginPath();
-    ctx.strokeStyle = '#4938ef';
+    ctx.strokeStyle = '#0e8f78';
     ctx.lineWidth = 1.5;
     ctx.moveTo(playX, 5);
     ctx.lineTo(playX, height - 5);
     ctx.stroke();
     ctx.beginPath();
-    ctx.fillStyle = '#4938ef';
+    ctx.fillStyle = '#0e8f78';
     ctx.arc(playX, mid, 2.8, 0, Math.PI * 2);
     ctx.fill();
   }
