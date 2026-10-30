@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 import { HttpError } from './providers.mjs';
+import { readLimitedBody } from './remote.mjs';
 
 const REPO = 'hehonghui/awesome-english-ebooks';
 const TREE_URL = `https://api.github.com/repos/${REPO}/git/trees/master?recursive=1`;
@@ -8,6 +9,9 @@ const RAW_BASE = `https://raw.githubusercontent.com/${REPO}/master/`;
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 const CATALOG_TTL = 30 * 60_000;
 const BOOK_TTL = 60 * 60_000;
+const MAX_EPUB_BYTES = 64 * 1024 * 1024;
+const MAX_ENTRY_BYTES = 8 * 1024 * 1024;
+const MAX_EXPANDED_BYTES = 128 * 1024 * 1024;
 
 export const BOOK_CATEGORIES = [
   {
@@ -185,7 +189,7 @@ export async function listBooks() {
     throw new HttpError(502, `无法读取 GitHub 图书目录：${error.message}`, 'BOOK_CATALOG_FAILED');
   }
   if (!response.ok) throw new HttpError(502, `GitHub 目录返回 HTTP ${response.status}`, 'BOOK_CATALOG_FAILED');
-  const data = await response.json();
+  const data = JSON.parse((await readLimitedBody(response, 16 * 1024 * 1024)).toString('utf8'));
   if (!Array.isArray(data.tree)) throw new HttpError(502, 'GitHub 目录格式异常。', 'BOOK_CATALOG_FAILED');
   const books = parseBooksFromTree(data.tree);
   const counts = new Map();
@@ -219,11 +223,18 @@ function zipEntries(buffer) {
   }
   if (eocd < 0) throw new HttpError(502, 'EPUB 不是有效的 ZIP 文件。', 'BOOK_BAD_EPUB');
   const count = buffer.readUInt16LE(eocd + 10);
+  const centralSize = buffer.readUInt32LE(eocd + 12);
   const centralOffset = buffer.readUInt32LE(eocd + 16);
+  if (count > 4096 || centralOffset + centralSize > eocd) {
+    throw new HttpError(502, 'EPUB 目录过大或已损坏。', 'BOOK_BAD_EPUB');
+  }
   const entries = new Map();
   let offset = centralOffset;
+  let expandedSize = 0;
   for (let index = 0; index < count; index += 1) {
-    if (buffer.readUInt32LE(offset) !== 0x02014b50) break;
+    if (offset + 46 > centralOffset + centralSize || buffer.readUInt32LE(offset) !== 0x02014b50) {
+      throw new HttpError(502, 'EPUB 目录已损坏。', 'BOOK_BAD_EPUB');
+    }
     const method = buffer.readUInt16LE(offset + 10);
     const compressedSize = buffer.readUInt32LE(offset + 20);
     const uncompressedSize = buffer.readUInt32LE(offset + 24);
@@ -231,6 +242,10 @@ function zipEntries(buffer) {
     const extraLength = buffer.readUInt16LE(offset + 30);
     const commentLength = buffer.readUInt16LE(offset + 32);
     const localOffset = buffer.readUInt32LE(offset + 42);
+    expandedSize += uncompressedSize;
+    if (expandedSize > MAX_EXPANDED_BYTES || offset + 46 + nameLength + extraLength + commentLength > centralOffset + centralSize) {
+      throw new HttpError(502, 'EPUB 展开大小超限或目录已损坏。', 'BOOK_BAD_EPUB');
+    }
     const name = buffer.toString('utf8', offset + 46, offset + 46 + nameLength);
     entries.set(name, { method, compressedSize, uncompressedSize, localOffset });
     offset += 46 + nameLength + extraLength + commentLength;
@@ -242,14 +257,28 @@ function readZipEntry(buffer, entries, name) {
   const entry = entries.get(name);
   if (!entry) return null;
   const local = entry.localOffset;
-  if (buffer.readUInt32LE(local) !== 0x04034b50) return null;
+  if (local + 30 > buffer.length || buffer.readUInt32LE(local) !== 0x04034b50) {
+    throw new HttpError(502, 'EPUB 文件条目已损坏。', 'BOOK_BAD_EPUB');
+  }
   const nameLength = buffer.readUInt16LE(local + 26);
   const extraLength = buffer.readUInt16LE(local + 28);
   const start = local + 30 + nameLength + extraLength;
+  if (start + entry.compressedSize > buffer.length || entry.uncompressedSize > MAX_ENTRY_BYTES) {
+    throw new HttpError(502, 'EPUB 文件条目过大或已损坏。', 'BOOK_BAD_EPUB');
+  }
   const compressed = buffer.subarray(start, start + entry.compressedSize);
-  if (entry.method === 0) return Buffer.from(compressed);
-  if (entry.method === 8) return inflateRawSync(compressed);
-  throw new HttpError(502, `EPUB 使用了不支持的压缩方式：${entry.method}`, 'BOOK_BAD_EPUB');
+  let data;
+  try {
+    if (entry.method === 0) data = Buffer.from(compressed);
+    else if (entry.method === 8) data = inflateRawSync(compressed, { maxOutputLength: MAX_ENTRY_BYTES });
+    else throw new Error('Unsupported compression');
+  } catch {
+    throw new HttpError(502, 'EPUB 无法安全解压。', 'BOOK_BAD_EPUB');
+  }
+  if (data.length !== entry.uncompressedSize) {
+    throw new HttpError(502, 'EPUB 条目长度与目录不符。', 'BOOK_BAD_EPUB');
+  }
+  return data;
 }
 
 function parseNcx(ncx, opfDir) {
@@ -409,7 +438,7 @@ export async function readBook(categoryId, date) {
     throw new HttpError(502, `下载 EPUB 失败：${error.message}`, 'BOOK_DOWNLOAD_FAILED');
   }
   if (!response.ok) throw new HttpError(502, `EPUB 返回 HTTP ${response.status}`, 'BOOK_DOWNLOAD_FAILED');
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const buffer = await readLimitedBody(response, MAX_EPUB_BYTES);
   if (buffer.length < 100) throw new HttpError(502, 'EPUB 文件为空。', 'BOOK_DOWNLOAD_FAILED');
   const parsed = parseEpub(buffer, book);
   cacheSet(bookCache, key, parsed, 3);

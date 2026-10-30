@@ -1,10 +1,39 @@
 import { HttpError } from './providers.mjs';
 import { distributeWords, tokenizeTimedText } from './word-timing.mjs';
+import { readLimitedBody } from './remote.mjs';
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 const FEED_TTL = 10 * 60_000;
 const TRANSCRIPT_TTL = 30 * 60_000;
 const MAX_EPISODES = 24;
+const REDIRECT_HOSTS = new Set(['op3.dev', 'pdst.fm', 'chrt.fm', 'chtbl.com', 'dts.podtrac.com']);
+
+function podcastUrl(value) {
+  let url;
+  try { url = new URL(value); } catch {
+    throw new HttpError(502, '播客资源地址无效。', 'PODCAST_BAD_URL');
+  }
+  const allowed = ['podnews.net', 'buzzsprout.com'].some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`))
+    || REDIRECT_HOSTS.has(url.hostname);
+  if (url.protocol !== 'https:' || url.username || url.password || url.port || !allowed) {
+    throw new HttpError(502, '播客资源地址不受信任。', 'PODCAST_BAD_URL');
+  }
+  return url;
+}
+
+async function fetchPodcastResource(value, { headers, timeout = 25_000 } = {}) {
+  let url = podcastUrl(value);
+  const signal = AbortSignal.timeout(timeout);
+  for (let redirects = 0; redirects <= 5; redirects += 1) {
+    const response = await fetch(url.href, { headers, signal, redirect: 'manual' });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    await response.body?.cancel();
+    const location = response.headers.get('location');
+    if (!location) break;
+    url = podcastUrl(new URL(location, url).href);
+  }
+  throw new HttpError(502, '播客资源重定向过多。', 'PODCAST_REDIRECT');
+}
 
 export const PODCAST_CHANNELS = [
   {
@@ -163,16 +192,15 @@ function parseItem(item, channel) {
 async function fetchFeed(channel) {
   let response;
   try {
-    response = await fetch(channel.feed, {
+    response = await fetchPodcastResource(channel.feed, {
       headers: { 'User-Agent': USER_AGENT, Accept: 'application/rss+xml,text/xml,*/*' },
-      signal: AbortSignal.timeout(25_000),
-      redirect: 'follow',
     });
   } catch (error) {
+    if (error instanceof HttpError) throw error;
     throw new HttpError(502, `播客源请求失败：${error.message}`, 'PODCAST_FEED_FAILED');
   }
   if (!response.ok) throw new HttpError(502, `播客源返回 HTTP ${response.status}`, 'PODCAST_FEED_FAILED');
-  const xml = await response.text();
+  const xml = (await readLimitedBody(response, 4 * 1024 * 1024)).toString('utf8');
   const channelInfo = parseChannel(xml, channel);
   const items = [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)]
     .map((match) => parseItem(match[1], channelInfo))
@@ -272,16 +300,15 @@ async function fetchTranscript(url) {
   if (cached) return cached;
   let response;
   try {
-    response = await fetch(url, {
+    response = await fetchPodcastResource(url, {
       headers: { 'User-Agent': USER_AGENT, Accept: 'text/vtt,text/plain,*/*' },
-      signal: AbortSignal.timeout(25_000),
-      redirect: 'follow',
     });
   } catch (error) {
+    if (error instanceof HttpError) throw error;
     throw new HttpError(502, `字幕请求失败：${error.message}`, 'PODCAST_TRANSCRIPT_FAILED');
   }
   if (!response.ok) throw new HttpError(502, `字幕返回 HTTP ${response.status}`, 'PODCAST_TRANSCRIPT_FAILED');
-  const text = await response.text();
+  const text = (await readLimitedBody(response, 4 * 1024 * 1024)).toString('utf8');
   const cues = parseVtt(text);
   if (!cues.length) throw new HttpError(502, '字幕文件没有可用的时间轴。', 'EMPTY_PODCAST_TRANSCRIPT');
   cacheSet(transcriptCache, url, cues);
@@ -298,6 +325,9 @@ export async function getPodcastEpisode(channelId, episodeId) {
 }
 
 export async function openPodcastAudio(channelId, episodeId, range = '') {
+  if (range && !/^bytes=(?:\d+-\d*|-\d+)$/.test(range)) {
+    throw new HttpError(400, '只支持单段字节范围。', 'BAD_RANGE');
+  }
   const data = await listPodcastEpisodes(channelId);
   const episode = data.episodes.find((item) => item.id === episodeId);
   if (!episode) throw new HttpError(404, '播客单集不存在。', 'PODCAST_EPISODE_NOT_FOUND');
@@ -305,11 +335,12 @@ export async function openPodcastAudio(channelId, episodeId, range = '') {
   if (range) headers.Range = range;
   let response;
   try {
-    response = await fetch(episode.audio, {
+    response = await fetchPodcastResource(episode.audio, {
       headers,
-      redirect: 'follow',
+      timeout: 120_000,
     });
   } catch (error) {
+    if (error instanceof HttpError) throw error;
     throw new HttpError(502, `音频请求失败：${error.message}`, 'PODCAST_AUDIO_FAILED');
   }
   if (!response.ok && response.status !== 206) {

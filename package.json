@@ -1,22 +1,20 @@
 {
-  "name": "enos-ielts",
+  "name": "enos-studio",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "EnOS · 一句英文走完雅思四项。本地优先的雅思语境学习 Web 应用。",
+  "description": "EnOS · YouTube、播客与英文图书学习工作台。",
   "scripts": {
     "start": "node server/start.mjs",
-    "dev": "node --watch server/server.mjs",
+    "dev": "node server/start.mjs --watch",
     "test": "node --test",
-    "validate": "node scripts/validate-data.mjs",
-    "smoke": "node scripts/browser-check.mjs",
-    "smoke:video": "node scripts/video-check.mjs",
-    "icons": "node scripts/generate-icons.mjs",
-    "mock": "node scripts/mock-provider.mjs",
-    "audit": "node scripts/overflow-check.mjs"
+    "check": "node --experimental-vm-modules scripts/check.mjs",
+    "smoke": "node scripts/video-check.mjs",
+    "smoke:mobile": "node scripts/video-check.mjs --mobile",
+    "icons": "node scripts/generate-icons.mjs"
   },
   "engines": {
-    "node": ">=20.11"
+    "node": ">=24.5.0"
   },
   "license": "MIT",
   "dependencies": {

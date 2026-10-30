@@ -24,10 +24,6 @@ export function append(parent, children) {
   }
 }
 
-export function clear(element) {
-  while (element.firstChild) element.removeChild(element.firstChild);
-}
-
 const ICONS = {
   headphones: '<path d="M4 14v-2a8 8 0 0 1 16 0v2"/><path d="M4 14a2 2 0 0 1 2-2h1v6H6a2 2 0 0 1-2-2z"/><path d="M20 14a2 2 0 0 0-2-2h-1v6h1a2 2 0 0 0 2-2z"/>',
   book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15.5H6.5A2.5 2.5 0 0 0 4 21z"/><path d="M4 18.5A2.5 2.5 0 0 1 6.5 16H20"/>',
@@ -69,10 +65,6 @@ export function icon(name, size = 18, stroke = 1.7) {
   return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
 }
 
-export function iconEl(name, size = 18) {
-  return h('span', { class: 'icon-wrap', html: icon(name, size), 'aria-hidden': 'true' });
-}
-
 export function toast(message, type = 'info', timeout = 3400) {
   const root = document.getElementById('toasts');
   if (!root) return;
@@ -87,68 +79,29 @@ export function toast(message, type = 'info', timeout = 3400) {
 
 export function modal({ title, body, actions = [{ label: '知道了', value: true, primary: true }] }) {
   const root = document.getElementById('modal-root');
+  const opener = document.activeElement;
   return new Promise((resolve) => {
     const close = (value) => {
+      overlay.close();
       overlay.remove();
-      document.removeEventListener('keydown', onKey);
+      if (opener?.isConnected) opener.focus();
       resolve(value);
     };
-    const onKey = (event) => {
-      if (event.key === 'Escape') close(null);
-    };
-    const overlay = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+    const overlay = h('dialog', { class: 'modal', 'aria-label': title },
       h('div', { class: 'modal-card' },
         h('h3', {}, title),
         h('div', { class: 'modal-body' }, body),
         h('div', { class: 'modal-actions' }, actions.map((action) => h('button', {
           class: `btn ${action.primary ? 'btn-primary' : 'btn-ghost'}`,
+          type: 'button',
           onclick: () => close(action.value),
         }, action.label)))));
     overlay.addEventListener('click', (event) => { if (event.target === overlay) close(null); });
-    document.addEventListener('keydown', onKey);
+    overlay.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      close(null);
+    });
     root.append(overlay);
-    const first = overlay.querySelector('button');
-    first?.focus();
+    overlay.showModal();
   });
-}
-
-export function scoreRing(value, { size = 78, color = 'var(--accent)', label = null } = {}) {
-  const radius = (size - 10) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const ratio = Math.max(0, Math.min(1, value / 100));
-  const ring = h('div', { class: 'score-ring', style: `width:${size}px;height:${size}px` });
-  ring.innerHTML = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-    <circle class="ring-bg" cx="${size / 2}" cy="${size / 2}" r="${radius}" fill="none" stroke-width="6"/>
-    <circle class="ring-fg" cx="${size / 2}" cy="${size / 2}" r="${radius}" fill="none" stroke-width="6"
-      style="stroke:${color}" stroke-dasharray="${circumference}" stroke-dashoffset="${circumference * (1 - ratio)}"/>
-  </svg><span class="ring-label">${label ?? Math.round(value)}</span>`;
-  return ring;
-}
-
-export function formatDate(value) {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, '0')}.${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-}
-
-export function spinner(label = '处理中') {
-  return h('span', { class: 'inline-loading' }, h('span', { class: 'spinner dark' }), label);
-}
-
-export async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast('已复制到剪贴板', 'ok', 1800);
-  } catch {
-    toast('复制失败，请手动选择文本', 'err');
-  }
-}
-
-export function escapeHTML(value = '') {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }

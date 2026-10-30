@@ -10,16 +10,15 @@ export class ApiError extends Error {
 }
 
 export const FALLBACK_PROVIDERS = [
-  { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-flash', models: ['deepseek-flash', 'deepseek-v4-pro'], docs: 'https://platform.deepseek.com', search: 'deepseek', note: '支持 JSON 输出，自带 Search / Fetch。' },
-  { id: 'kimi', label: 'Kimi', baseUrl: 'https://api.moonshot.cn/v1', model: 'kimi-k3.1-pro', models: ['kimi-k3.1-pro', 'kimi-k3', 'kimi-k2.6'], docs: 'https://platform.kimi.com', search: 'kimi', note: '国内站 api.moonshot.cn，国际站可换 .ai。' },
-  { id: 'zhipu', label: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.3-flash', models: ['glm-5.3-flash', 'glm-5.3', 'glm-4-flash'], docs: 'https://bigmodel.cn', search: 'zhipu', note: '使用 /web_search 联网。' },
-  { id: 'mimo', label: 'MiMo', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.6-flash', models: ['mimo-v2.6-flash', 'mimo-v2.6-pro'], docs: 'https://platform.xiaomimimo.com', search: 'none', note: 'OpenAI 兼容协议。' },
-  { id: 'custom', label: '自定义', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', models: [], docs: '', search: 'none', note: '任何兼容 /chat/completions 的服务。' },
+  { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-flash', models: ['deepseek-flash', 'deepseek-v4-pro'], docs: 'https://platform.deepseek.com', note: '支持 JSON 输出与流式对话。' },
+  { id: 'kimi', label: 'Kimi', baseUrl: 'https://api.moonshot.cn/v1', model: 'kimi-k3.1-pro', models: ['kimi-k3.1-pro', 'kimi-k3', 'kimi-k2.6'], docs: 'https://platform.kimi.com', note: '国内站 api.moonshot.cn，国际站可换 .ai。' },
+  { id: 'zhipu', label: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.3-flash', models: ['glm-5.3-flash', 'glm-5.3', 'glm-4-flash'], docs: 'https://bigmodel.cn', note: 'OpenAI 兼容模型接口。' },
+  { id: 'mimo', label: 'MiMo', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.6-flash', models: ['mimo-v2.6-flash', 'mimo-v2.6-pro'], docs: 'https://platform.xiaomimimo.com', note: 'OpenAI 兼容协议。' },
+  { id: 'custom', label: '自定义', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', models: [], docs: '', note: '任何兼容 /chat/completions 的服务。' },
 ];
 
 let healthPromise = null;
 let healthCache = null;
-let bankPromise = null;
 
 export function getProviders() {
   return healthCache?.providers?.length ? healthCache.providers : FALLBACK_PROVIDERS;
@@ -88,7 +87,7 @@ async function parseError(response) {
 export async function chat({ messages, json = false, maxTokens = 1400, temperature = 0.7, signal, settings = getSettings() } = {}) {
   const config = configFor(settings);
   if (!config.apiKey && !providerHasEnvKey(config.provider)) {
-    throw new ApiError('还没有配置 API Key。可以先用本地引擎学习，或在设置里填入 Key。', 'NO_KEY', 401);
+    throw new ApiError('还没有配置 API Key。请在设置中配置模型服务。', 'NO_KEY', 401);
   }
   const response = await fetch('/api/chat', {
     method: 'POST',
@@ -144,38 +143,6 @@ export async function chatStream({ messages, maxTokens = 700, temperature = 0.7,
     }
   }
   return full;
-}
-
-export async function searchTopic(query, { count = 5, summarize = true, settings = getSettings() } = {}) {
-  const config = configFor(settings);
-  const response = await fetch('/api/search', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ ...config, query, count, summarize }),
-  });
-  if (!response.ok) throw await parseError(response);
-  return response.json();
-}
-
-export async function extractArticle(url) {
-  const response = await fetch('/api/extract', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ url }),
-  });
-  if (!response.ok) throw await parseError(response);
-  return response.json();
-}
-
-export async function lookupWord(word, { settings = getSettings() } = {}) {
-  const config = configFor(settings);
-  const response = await fetch('/api/word', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ ...config, word }),
-  });
-  if (!response.ok) throw await parseError(response);
-  return response.json();
 }
 
 export function youtubeKeyFor(settings = getSettings()) {
@@ -275,18 +242,3 @@ export async function testConnection(settings = getSettings()) {
   return { latency: Math.round(performance.now() - started), model: data.model, reply: String(data.content || '').slice(0, 40) };
 }
 
-export async function loadBank() {
-  if (!bankPromise) {
-    bankPromise = fetch('/data/core100.json')
-      .then(async (response) => {
-        if (!response.ok) throw new Error('词库加载失败');
-        const data = await response.json();
-        return data;
-      })
-      .catch((error) => {
-        bankPromise = null;
-        throw error;
-      });
-  }
-  return bankPromise;
-}

@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-let proxy = String(process.env.YOUTUBE_PROXY || process.env.HTTPS_PROXY || '').trim();
+let proxy = String(process.env.YOUTUBE_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || '').trim();
 const configPath = path.join(ROOT, 'proxy.config.json');
 if (!proxy && existsSync(configPath)) {
   try {
@@ -40,7 +40,8 @@ if (proxy) {
   }
 }
 
-const child = spawn(process.execPath, ['server/server.mjs'], {
+const args = process.argv.includes('--watch') ? ['--watch', 'server/server.mjs'] : ['server/server.mjs'];
+const child = spawn(process.execPath, args, {
   cwd: ROOT,
   env,
   stdio: 'inherit',

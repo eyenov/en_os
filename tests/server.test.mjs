@@ -2,35 +2,14 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const APP_PORT = 8917;
 const MOCK_PORT = 8918;
-const ARTICLE_PORT = 8919;
 const BASE = `http://127.0.0.1:${APP_PORT}`;
 const MOCK = `http://127.0.0.1:${MOCK_PORT}/v1`;
-const ARTICLE = `http://127.0.0.1:${ARTICLE_PORT}`;
 let app;
 let mock;
-let articleSite;
-
-const ARTICLE_HTML = `<!doctype html><html><head><title>Shade and the city | Example</title>
-<script>window.dataLayer = [];</script><style>body{margin:0}</style></head>
-<body><nav><a href="/">Home</a><a href="/news">News</a></nav>
-<header><h1>Shade and the city</h1></header>
-<article>
-<p>Urban planners increasingly argue that cities should stop widening roads. Instead, they advocate spending on public transport and shaded walking routes, because a street with trees invites people to stay outside longer.</p>
-<p>A study of three European cities found that pedestrians walked further when the route offered shade and benches. The effect was strongest in summer, when surface temperatures on unshaded asphalt can be several degrees higher than in a park.</p>
-<p>Critics point out that trees need water and maintenance, and that narrow streets leave less room for delivery vans. Planners reply that the costs are predictable, while the health benefits of cooler streets accumulate over decades.</p>
-<p>The debate is now moving from design magazines into city budgets. In Seville, a programme that covers streets with light fabric has cut summer temperatures by several degrees, and shopkeepers who opposed the scheme now ask for more shade.</p>
-<p>None of this means that every road should be planted. What matters, researchers say, is that a city treats shade as infrastructure rather than decoration, and budgets for it the way it budgets for drains and streetlights.</p>
-</article>
-<aside><p>Subscribe to our newsletter for more stories about cities and climate.</p></aside>
-<footer>© 2026 Example. All rights reserved.</footer></body></html>`;
-
-const CHINESE_HTML = `<!doctype html><html><head><title>人工智能</title></head><body><article>
-<p>人工智能正在改变很多行业。研究人员指出，大型语言模型需要大量算力，而企业开始把这些模型部署到客服和写作场景中。</p>
-<p>不过，模型的输出仍然需要人来检查。专家建议团队建立评估流程，并记录每次上线后的真实效果。</p>
-</article></body></html>`;
 
 function json(res, status, data) {
   const body = JSON.stringify(data);
@@ -62,23 +41,6 @@ async function waitFor(url, timeout = 12_000) {
 
 before(async () => {
   mock = http.createServer(async (req, res) => {
-    if (req.url.endsWith('/tools/search')) {
-      const body = await readBody(req);
-      const query = String(body.query || body.text_query || '');
-      const url = /rewrite/i.test(query) ? `${ARTICLE}/missing` : `${ARTICLE}/article`;
-      const snippet = /rewrite/i.test(query)
-        ? 'Mock snippet about a page that cannot be fetched.'
-        : 'Mock snippet about shade and public transport.';
-      return json(res, 200, {
-        results: [{
-          title: 'Mock result',
-          url,
-          snippet,
-          summary: 'Mock summary about cities and shade.',
-          content: 'Mock content about shaded streets and public transport.',
-        }],
-      });
-    }
     if (!req.url.endsWith('/chat/completions')) return json(res, 404, { error: { message: 'not found' } });
     const body = await readBody(req);
     const system = (body.messages || []).map((message) => message.content).join(' ');
@@ -105,44 +67,17 @@ before(async () => {
         }],
       });
     }
-    const content = system.includes('short English web search query')
-      ? 'urban shade'
-      : system.includes('short IELTS reading passages')
-        ? 'Mock article about shade.'
-        : system.includes('English-Chinese dictionary')
-          ? JSON.stringify({
-            phonetic: '/ʃeɪd/',
-            zh: '阴凉处',
-            en: 'an area where the sun does not shine',
-            usage: 'in the shade of a tree',
-            example: 'We sat in the shade.',
-          })
-          : 'ok';
     return json(res, 200, {
       model: 'mock-model',
-      choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
       usage: { total_tokens: 12 },
     });
   });
   await new Promise((resolve) => mock.listen(MOCK_PORT, '127.0.0.1', resolve));
 
-  articleSite = http.createServer((req, res) => {
-    if (req.url.startsWith('/article')) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(ARTICLE_HTML);
-    }
-    if (req.url.startsWith('/chinese')) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(CHINESE_HTML);
-    }
-    res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end('<html><body><p>not found</p></body></html>');
-  });
-  await new Promise((resolve) => articleSite.listen(ARTICLE_PORT, '127.0.0.1', resolve));
-
   app = spawn(process.execPath, ['server/server.mjs'], {
-    cwd: new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'),
-    env: { ...process.env, PORT: String(APP_PORT), HOST: '127.0.0.1', ENOS_ALLOW_LOCAL_FETCH: '1' },
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
+    env: { ...process.env, PORT: String(APP_PORT), HOST: '127.0.0.1', MIMO_API_KEY: 'environment-key-fixture', MIMO_BASE_URL: '', CUSTOM_API_KEY: '' },
     stdio: 'ignore',
   });
   await waitFor(`${BASE}/api/health`);
@@ -151,7 +86,6 @@ before(async () => {
 after(() => {
   app?.kill();
   mock?.close();
-  articleSite?.close();
 });
 
 async function post(path, body) {
@@ -172,23 +106,18 @@ test('health exposes providers without leaking keys', async () => {
   assert.ok(data.providers.every((provider) => !('apiKey' in provider)));
 });
 
-test('workspace homepage, CSP and static data are served', async () => {
+test('workspace homepage and CSP are served without retired views', async () => {
   const response = await fetch(`${BASE}/`);
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-security-policy') || '', /default-src 'self'/);
   const homepage = await response.text();
   assert.match(homepage, /id="rail-settings"/);
   assert.match(homepage, /id="tab-youtube"/);
-  assert.doesNotMatch(homepage, /class="studio-topbar"|data-route="(?:home|listening|reports)"/);
+  assert.doesNotMatch(homepage, /class="studio-topbar"|rail-chat|chat-view|data-route="(?:home|listening|reports)"/);
 
   const legacyIndex = await fetch(`${BASE}/index.html`);
   assert.equal(legacyIndex.status, 200);
   assert.match(await legacyIndex.text(), /id="rail-settings"/);
-
-  const data = await fetch(`${BASE}/data/core100.json`);
-  assert.equal(data.status, 200);
-  const bank = await data.json();
-  assert.equal(bank.words.length, 100);
 
   const missing = await fetch(`${BASE}/nope.html`);
   assert.equal(missing.status, 404);
@@ -245,6 +174,30 @@ test('non-https remote base URL is rejected', async () => {
   assert.equal((await response.json()).error.code, 'BAD_BASE_URL');
 });
 
+test('environment keys cannot be forwarded to a client-selected upstream', async () => {
+  const response = await post('/api/chat', {
+    provider: 'mimo', baseUrl: MOCK, model: 'mock',
+    messages: [{ role: 'user', content: 'ping' }],
+  });
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'KEY_SCOPE');
+  const explicit = await post('/api/chat', {
+    provider: 'mimo', apiKey: 'sk-test', baseUrl: MOCK, model: 'mock',
+    messages: [{ role: 'user', content: 'ping' }],
+  });
+  assert.equal(explicit.status, 200);
+});
+
+test('provider URLs reject embedded credentials, query strings and fragments', async () => {
+  for (const baseUrl of ['https://user:pass@example.com/v1', 'https://example.com/v1?token=value', 'https://example.com/v1#fragment']) {
+    const response = await post('/api/chat', {
+      provider: 'custom', apiKey: 'sk-test', baseUrl, messages: [{ role: 'user', content: 'ping' }],
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, 'BAD_BASE_URL');
+  }
+});
+
 test('invalid JSON and wrong methods are handled', async () => {
   const bad = await fetch(`${BASE}/api/chat`, {
     method: 'POST',
@@ -256,105 +209,69 @@ test('invalid JSON and wrong methods are handled', async () => {
   const wrongMethod = await fetch(`${BASE}/api/chat`);
   assert.equal(wrongMethod.status, 405);
 
-  const extractGet = await fetch(`${BASE}/api/extract`);
-  assert.equal(extractGet.status, 405);
-
-  const wordGet = await fetch(`${BASE}/api/word`);
-  assert.equal(wordGet.status, 405);
+  assert.equal((await post('/api/health', {})).status, 405);
 });
 
-test('native search extracts a real English excerpt from the top result', async () => {
-  const response = await post('/api/search', {
-    provider: 'deepseek', apiKey: 'sk-test', baseUrl: MOCK, model: 'mock',
-    query: 'urban shade', count: 3, summarize: true,
+test('JSON endpoints reject non-object bodies and unsupported media types', async () => {
+  for (const body of [null, [], 'text', 1, true]) {
+    const response = await post('/api/chat', body);
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, 'BAD_BODY');
+  }
+  const response = await fetch(`${BASE}/api/chat`, {
+    method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{}',
   });
-  assert.equal(response.status, 200);
-  const data = await response.json();
-  assert.equal(data.source, 'deepseek');
-  assert.equal(data.mode, 'excerpt');
-  assert.equal(data.degraded, false);
-  assert.equal(data.items[0].title, 'Mock result');
-  assert.ok(data.article.startsWith('Urban planners increasingly argue'));
-  assert.match(data.article, /[.!?]$/);
-  assert.ok(!data.article.includes('Subscribe'), 'navigation noise must not leak into the excerpt');
-  assert.ok(data.articleMeta.wordCount >= 150 && data.articleMeta.wordCount <= 220);
-  assert.equal(data.articleMeta.url, `${ARTICLE}/article`);
+  assert.equal(response.status, 415);
+  assert.equal((await response.json()).error.code, 'UNSUPPORTED_MEDIA_TYPE');
 });
 
-test('a Chinese topic is translated into an English search query', async () => {
-  const response = await post('/api/search', {
-    provider: 'deepseek', apiKey: 'sk-test', baseUrl: MOCK, model: 'mock',
-    query: '人工智能最新技术', count: 3, summarize: true,
-  });
-  assert.equal(response.status, 200);
-  const data = await response.json();
-  assert.equal(data.query, '人工智能最新技术');
-  assert.equal(data.usedQuery, 'urban shade');
-  assert.equal(data.translated, true);
-  assert.equal(data.mode, 'excerpt');
+test('oversized requests return a JSON 413 instead of closing the connection', async () => {
+  const response = await post('/api/youtube/search', { query: 'x'.repeat(2 * 1024 * 1024) });
+  assert.equal(response.status, 413);
+  assert.equal((await response.json()).error.code, 'BODY_TOO_LARGE');
 });
 
-test('search falls back to a model rewrite when the page cannot be fetched', async () => {
-  const response = await post('/api/search', {
-    provider: 'deepseek', apiKey: 'sk-test', baseUrl: MOCK, model: 'mock',
-    query: 'rewrite this page', count: 1, summarize: true,
-  });
-  assert.equal(response.status, 200);
-  const data = await response.json();
-  assert.equal(data.mode, 'rewrite');
-  assert.equal(data.article, 'Mock article about shade.');
-  assert.ok(data.warnings.some((warning) => warning.includes('不是原文')));
-});
-
-test('/api/extract returns a sentence-aligned English excerpt', async () => {
-  const response = await post('/api/extract', { url: `${ARTICLE}/article` });
-  assert.equal(response.status, 200);
-  const data = await response.json();
-  assert.ok(data.wordCount >= 150 && data.wordCount <= 220);
-  assert.ok(data.excerpt.startsWith('Urban planners increasingly argue'));
-  assert.match(data.excerpt, /[.!?]$/);
-  assert.equal(data.title, 'Shade and the city | Example');
-});
-
-test('/api/extract rejects pages without usable English prose', async () => {
-  const chinese = await post('/api/extract', { url: `${ARTICLE}/chinese` });
-  assert.equal(chinese.status, 422);
-  assert.equal((await chinese.json()).error.code, 'NO_EXCERPT');
-
-  const missing = await post('/api/extract', {});
-  assert.equal(missing.status, 400);
-  assert.equal((await missing.json()).error.code, 'BAD_URL');
-});
-
-test('/api/word looks up a word through the chat provider', async () => {
-  const response = await post('/api/word', {
-    provider: 'custom', apiKey: 'sk-test', baseUrl: MOCK, model: 'mock',
-    word: 'shade',
-  });
-  assert.equal(response.status, 200);
-  const data = await response.json();
-  assert.equal(data.word, 'shade');
-  assert.equal(data.zh, '阴凉处');
-  assert.ok(data.en);
-  assert.equal(data.source, 'ai');
-});
-
-test('/api/word without a key is rejected', async () => {
-  const response = await post('/api/word', {
-    provider: 'custom', baseUrl: MOCK, model: 'mock',
-    word: 'garden',
-  });
-  assert.equal(response.status, 401);
-  assert.equal((await response.json()).error.code, 'NO_KEY');
-});
-
-test('/api/word rejects non-words', async () => {
-  const response = await post('/api/word', {
-    provider: 'custom', apiKey: 'sk-test', baseUrl: MOCK, model: 'mock',
-    word: 'hello world!',
-  });
+test('malformed URL encoding does not crash the server', async () => {
+  const response = await fetch(`${BASE}/%E0%A4%A`);
   assert.equal(response.status, 400);
-  assert.equal((await response.json()).error.code, 'BAD_WORD');
+  assert.equal((await response.json()).error.code, 'BAD_PATH');
+  assert.equal((await fetch(`${BASE}/api/health`)).status, 200);
+});
+
+test('retired APIs and pages return 404', async () => {
+  for (const route of ['/api/search', '/api/extract', '/api/word']) {
+    const response = await post(route, {});
+    assert.equal(response.status, 404);
+    assert.equal((await response.json()).error.code, 'NOT_FOUND');
+  }
+  for (const route of ['/watch.html', '/report.html', '/data/core100.json']) {
+    assert.equal((await fetch(`${BASE}${route}`)).status, 404);
+  }
+});
+
+test('static HEAD requests return the same status and length as GET', async () => {
+  for (const route of ['/videos.html', '/no-such-page']) {
+    const get = await fetch(`${BASE}${route}`);
+    const head = await fetch(`${BASE}${route}`, { method: 'HEAD' });
+    assert.equal(head.status, get.status);
+    assert.equal(head.headers.get('content-length'), get.headers.get('content-length'));
+    assert.equal(await head.text(), '');
+  }
+});
+
+test('cross-site API requests and untrusted Host headers are rejected', async () => {
+  for (const headers of [{ Origin: 'https://untrusted.example' }, { 'Sec-Fetch-Site': 'cross-site' }]) {
+    const response = await fetch(`${BASE}/api/health`, { headers });
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).error.code, 'BAD_ORIGIN');
+  }
+  const status = await new Promise((resolve, reject) => {
+    http.get(`${BASE}/api/health`, { headers: { Host: 'untrusted.example' } }, (response) => {
+      response.resume();
+      resolve(response.statusCode);
+    }).on('error', reject);
+  });
+  assert.equal(status, 403);
 });
 
 test('unknown API route returns JSON 404', async () => {
@@ -368,10 +285,6 @@ test('video pages are served and YouTube routes validate input', async () => {
   assert.equal(videos.status, 200);
   assert.match(await videos.text(), /video-search/);
   assert.match(videos.headers.get('content-security-policy') || '', /frame-src https:\/\/www\.youtube\.com/);
-
-  const watch = await fetch(`${BASE}/watch.html`);
-  assert.equal(watch.status, 200);
-  assert.match(await watch.text(), /subtitle-columns/);
 
   const badId = await post('/api/youtube/captions', { videoId: 'bad' });
   assert.equal(badId.status, 400);

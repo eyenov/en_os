@@ -1,7 +1,56 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseVtt } from '../server/podcasts.mjs';
+import { _clearPodcastCaches, getPodcastEpisode, listPodcastEpisodes, openPodcastAudio, parseVtt } from '../server/podcasts.mjs';
 import { findWordIndex, serializeSrt } from '../public/js/subtitle-sync.js';
+
+function feedFixture({ audio = 'https://podnews.net/audio/fixture.mp3', transcript = 'https://podnews.net/fixture.vtt' } = {}) {
+  return `<rss><channel><item><title>A safe episode</title><enclosure url="${audio}"/><podcast:transcript type="text/vtt" url="${transcript}"/></item></channel></rss>`;
+}
+
+test('podcast audio preserves a single Range and follows trusted redirects', async (context) => {
+  _clearPodcastCaches();
+  let range;
+  context.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(options.redirect, 'manual');
+    if (url === 'https://podnews.net/rss') return new Response(feedFixture());
+    if (url === 'https://podnews.net/audio/fixture.mp3') {
+      return new Response(null, { status: 302, headers: { Location: 'https://storage.buzzsprout.com/fixture.mp3' } });
+    }
+    range = options.headers.Range;
+    return new Response('audio', { status: 206, headers: { 'Content-Type': 'audio/mpeg' } });
+  });
+  const { episodes } = await listPodcastEpisodes('podnews-daily');
+  const { response } = await openPodcastAudio('podnews-daily', episodes[0].id, 'bytes=0-4');
+  assert.equal(response.status, 206);
+  assert.equal(range, 'bytes=0-4');
+});
+
+test('podcast sources cannot fetch private addresses or redirect outside trusted hosts', async (context) => {
+  let audio;
+  const requests = [];
+  context.mock.method(globalThis, 'fetch', async (url) => {
+    requests.push(url);
+    if (url === 'https://podnews.net/rss') return new Response(feedFixture({ audio }));
+    return new Response(null, { status: 302, headers: { Location: 'https://127.0.0.1/private' } });
+  });
+  for (audio of ['http://localhost/private', 'https://127.0.0.1/private', 'https://podnews.net.evil.example/audio', 'https://podnews.net/audio/fixture.mp3']) {
+    _clearPodcastCaches();
+    const { episodes } = await listPodcastEpisodes('podnews-daily');
+    await assert.rejects(openPodcastAudio('podnews-daily', episodes[0].id), { code: 'PODCAST_BAD_URL' });
+  }
+  assert.ok(requests.every((url) => url.startsWith('https://podnews.net/')));
+});
+
+test('podcast transcripts enforce size limits and audio rejects multiple ranges', async (context) => {
+  _clearPodcastCaches();
+  context.mock.method(globalThis, 'fetch', async (url) => new Response(
+    url === 'https://podnews.net/rss' ? feedFixture() : 'WEBVTT',
+    { headers: url === 'https://podnews.net/rss' ? {} : { 'Content-Length': String(5 * 1024 * 1024) } },
+  ));
+  const { episodes } = await listPodcastEpisodes('podnews-daily');
+  await assert.rejects(getPodcastEpisode('podnews-daily', episodes[0].id), { code: 'RESOURCE_TOO_LARGE' });
+  await assert.rejects(openPodcastAudio('podnews-daily', episodes[0].id, 'bytes=0-1,4-5'), { code: 'BAD_RANGE' });
+});
 
 test('parses podcast VTT cues and distributes word timings', () => {
   const cues = parseVtt(`WEBVTT

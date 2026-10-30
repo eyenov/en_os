@@ -31,12 +31,8 @@ const previewSource = document.getElementById('preview-source');
 const mediaView = document.getElementById('media-view');
 const youtubePane = document.getElementById('youtube-pane');
 const podcastPane = document.getElementById('podcast-pane');
-const chatView = document.getElementById('chat-view');
-const tabEmpty = document.getElementById('tab-empty');
-const workspace = document.getElementById('media-view');
 const treeOpen = document.getElementById('tree-open');
 const treeCollapse = document.getElementById('tree-collapse');
-const railChat = document.getElementById('rail-chat');
 const railSettings = document.getElementById('rail-settings');
 const settingsView = document.getElementById('settings-view');
 let settingsReady = false;
@@ -81,7 +77,6 @@ const podcast = {
   selectedChannel: '',
   selectedEpisode: null,
   cues: [],
-  loadingTranscript: false,
   translating: false,
   activeCue: -1,
   activeWord: -1,
@@ -145,7 +140,6 @@ let detailWordEls = [];
 let detailCharEls = [];
 
 const detail = {
-  open: false,
   item: null,
   player: null,
   playerReady: false,
@@ -176,7 +170,6 @@ const bookBack = document.getElementById('book-back');
 const bookState = {
   initialized: false,
   loading: false,
-  data: null,
   books: [],
   channels: [],
   selectedCategory: 'all',
@@ -185,7 +178,6 @@ const bookState = {
   chapters: [],
   active: 0,
   requestSeq: 0,
-  loadingBook: false,
   error: '',
 };
 
@@ -216,10 +208,6 @@ function groupChannels(items) {
 
 function initialOf(name) {
   return Array.from(name.trim())[0]?.toUpperCase() || 'Y';
-}
-
-function watchHref(item) {
-  return `/watch.html?v=${encodeURIComponent(item.id)}${state.query ? `&q=${encodeURIComponent(state.query)}` : ''}`;
 }
 
 function previewCard(item) {
@@ -1910,7 +1898,6 @@ async function ensureBooks() {
   renderBooksGrid();
   try {
     const data = await getBooks();
-    bookState.data = data;
     bookState.books = Array.isArray(data.books) ? data.books : [];
     bookState.channels = Array.isArray(data.channels) ? data.channels : [];
     bookState.initialized = true;
@@ -1998,7 +1985,6 @@ async function openBook(book) {
   bookState.item = book;
   bookState.chapters = [];
   bookState.active = 0;
-  bookState.loadingBook = true;
   bookState.requestSeq += 1;
   const request = bookState.requestSeq;
   bookTitle.textContent = book.title;
@@ -2029,8 +2015,6 @@ async function openBook(book) {
       h('strong', {}, '这本外刊暂时打不开'),
       h('p', {}, error.message || 'EPUB 解析失败，可以先下载到本地阅读。'),
     ));
-  } finally {
-    if (request === bookState.requestSeq) bookState.loadingBook = false;
   }
 }
 
@@ -2045,7 +2029,7 @@ function closeBookReader({ restore = true } = {}) {
 
 function setTreeCollapsed(value) {
   state.treeCollapsed = Boolean(value);
-  workspace.classList.toggle('tree-collapsed', state.treeCollapsed);
+  mediaView.classList.toggle('tree-collapsed', state.treeCollapsed);
   document.getElementById('channel-tree').inert = state.treeCollapsed;
   treeOpen.setAttribute('aria-expanded', String(!state.treeCollapsed));
   updateTreeOpen();
@@ -2070,7 +2054,6 @@ function renderTabState() {
   podcastPane.classList.toggle('hidden', !(showMedia && podcastTab));
   booksPane.classList.toggle('hidden', !(showMedia && booksTab && !showBookReader));
   bookReader.classList.toggle('hidden', !showBookReader);
-  tabEmpty.classList.add('hidden');
   if (showMedia) {
     treeEyebrow.textContent = youtube ? 'CHANNELS' : booksTab ? 'LIBRARY' : 'PODCAST CHANNELS';
     treeTitle.textContent = youtube ? '频道' : booksTab ? '外刊' : '播客频道';
@@ -2094,7 +2077,6 @@ async function ensureStudioSettings() {
     await getHealth().catch(() => null);
     const settings = await renderSettings({
       navigate: () => setView('videos'),
-      updateStatusPill: () => { chat.initialized = false; },
     });
     settingsView.replaceChildren(settings.el);
   } catch (error) {
@@ -2109,7 +2091,6 @@ async function ensureStudioSettings() {
 function updateRailSelection() {
   const choices = [
     ...[...document.querySelectorAll('.studio-tab')].map((button) => [button, state.view === 'videos' && button.dataset.tab === state.tab]),
-    [railChat, state.view === 'chat'],
     [railSettings, state.view === 'settings'],
   ];
   for (const [button, active] of choices) {
@@ -2126,10 +2107,8 @@ function updateRailSelection() {
 function setView(view) {
   state.view = view;
   const videos = view === 'videos';
-  const chatting = view === 'chat';
   const configuring = view === 'settings';
   updateRailSelection();
-  chatView.classList.toggle('hidden', !chatting);
   settingsView.classList.toggle('hidden', !configuring);
   const url = new URL(window.location.href);
   if (videos) url.searchParams.delete('view');
@@ -2137,14 +2116,10 @@ function setView(view) {
   window.history.replaceState(null, '', url);
   if (!videos) {
     mediaView.classList.add('hidden');
-    tabEmpty.classList.add('hidden');
     podcastAudio.pause();
     if (state.detailOpen) closeVideoDetail({ restore: false });
     if (bookState.readerOpen) closeBookReader({ restore: false });
-    if (chatting) {
-      chat.initialized = false;
-      ensureChat();
-    } else if (configuring) ensureStudioSettings();
+    if (configuring) ensureStudioSettings();
     updateTreeOpen();
     return;
   }
@@ -2165,98 +2140,6 @@ function setTab(tab) {
   else renderTabState();
 }
 
-/* ---------- conversation view ---------- */
-
-const chatMessages = document.getElementById('chat-messages');
-const chatForm = document.getElementById('chat-form');
-const chatInput = document.getElementById('chat-input');
-const chatSend = document.getElementById('chat-send');
-const chat = { initialized: false, available: false, busy: false, history: [] };
-
-function chatScroll() {
-  chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-function chatEmptyNode() {
-  return h('div', { class: 'chat-empty' },
-    h('strong', {}, chat.available ? '开始一段对话' : '配置 API Key 后开始对话'),
-    h('p', {}, chat.available
-      ? '可以问语法、词汇、写作，或让 Agent 解释一段英文。'
-      : '尚未配置模型 Key。'),
-    chat.available ? null : h('p', {}, h('a', { href: '/videos.html?view=settings', onclick: (event) => {
-      event.preventDefault();
-      setView('settings');
-    } }, '去设置 →')),
-  );
-}
-
-function renderChatEmpty() {
-  if (chat.history.length) return;
-  chatMessages.replaceChildren(chatEmptyNode());
-}
-
-function addChat(role, text, options = {}) {
-  const bubble = h('div', { class: `chat-msg ${role}${options.pending ? ' pending' : ''}${options.error ? ' error' : ''}` }, text);
-  chatMessages.append(bubble);
-  chatScroll();
-  return bubble;
-}
-
-async function ensureChat() {
-  if (chat.initialized) {
-    if (chat.available) chatInput.focus();
-    return;
-  }
-  chat.initialized = true;
-  await getHealth(true).catch(() => null);
-  chat.available = aiReady(getSettings());
-  chatInput.disabled = !chat.available;
-  chatSend.disabled = !chat.available;
-  chatInput.placeholder = chat.available ? '问 Agent：帮我解释这段英文…' : '配置 API Key 后与 Agent 对话';
-  renderChatEmpty();
-  if (chat.available) chatInput.focus();
-}
-
-async function sendChat(text) {
-  const question = String(text || '').trim();
-  if (!question || chat.busy || !chat.available) return;
-  chat.busy = true;
-  chatSend.disabled = true;
-  chatInput.value = '';
-  chatMessages.querySelector('.chat-empty')?.remove();
-  addChat('user', question);
-  chat.history.push({ role: 'user', content: question });
-  const bubble = addChat('assistant', '', { pending: true });
-
-  try {
-    const full = await chatStream({
-      messages: [
-        { role: 'system', content: 'You are EnOS, a concise bilingual study assistant for IELTS learners. Answer in Simplified Chinese unless asked otherwise. Explain grammar or vocabulary with short examples; do not invent sources.' },
-        ...chat.history.slice(-10),
-      ],
-      maxTokens: 900,
-      temperature: 0.5,
-      onDelta: (partial) => {
-        bubble.classList.remove('pending');
-        bubble.textContent = partial;
-        chatScroll();
-      },
-    });
-    bubble.classList.remove('pending');
-    bubble.textContent = full || '（Agent 没有返回内容）';
-    if (full) chat.history.push({ role: 'assistant', content: full });
-    chatScroll();
-  } catch (error) {
-    bubble.classList.remove('pending');
-    bubble.classList.add('error');
-    bubble.textContent = `请求失败：${error.message || '请稍后重试'}`;
-  } finally {
-    chat.busy = false;
-    chatSend.disabled = false;
-    chatInput.focus();
-  }
-}
-
 /* ---------- events + boot ---------- */
 
 form.addEventListener('submit', (event) => {
@@ -2264,7 +2147,6 @@ form.addEventListener('submit', (event) => {
   runSearch();
 });
 
-railChat.addEventListener('click', () => setView('chat'));
 railSettings.addEventListener('click', () => setView('settings'));
 treeCollapse.addEventListener('click', () => setTreeCollapsed(true));
 treeOpen.addEventListener('click', () => setTreeCollapsed(false));
@@ -2297,21 +2179,6 @@ document.addEventListener('keydown', (event) => {
   }
 });
 compactViewport.addEventListener('change', (event) => setTreeCollapsed(event.matches));
-
-chatForm.addEventListener('submit', (event) => {
-  event.preventDefault();
-  sendChat(chatInput.value);
-});
-chatInput.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-    event.preventDefault();
-    chatForm.requestSubmit();
-  }
-});
-chatInput.addEventListener('input', () => {
-  chatInput.style.height = 'auto';
-  chatInput.style.height = `${Math.min(110, chatInput.scrollHeight)}px`;
-});
 
 try { state.treeCollapsed = localStorage.getItem(TREE_KEY) === '1'; } catch { /* ignore */ }
 setTreeCollapsed(compactViewport.matches || state.treeCollapsed);
@@ -2355,7 +2222,7 @@ if (params.get('debug') === '1') {
   };
   renderChannels();
   renderPreviews();
-} else if (!['settings', 'chat'].includes(params.get('view'))) {
+} else if (params.get('view') !== 'settings') {
   const initial = params.get('q') || '';
   const initialTab = params.get('tab');
   if (initialTab === 'podcast' || initialTab === 'books') {
@@ -2368,7 +2235,7 @@ if (params.get('debug') === '1') {
   }
 }
 
-if (['settings', 'chat'].includes(params.get('view'))) setView(params.get('view'));
+if (params.get('view') === 'settings') setView('settings');
 
 window.addEventListener('error', (event) => {
   if (event.error?.name === 'AbortError') return;

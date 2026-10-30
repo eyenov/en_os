@@ -19,7 +19,7 @@ const PORT = 9336;
 const BASE = process.env.ENOS_URL || 'http://127.0.0.1:8787';
 const SHOTS = path.resolve('.shots');
 const PROFILE = path.resolve('.chrome-video-profile');
-const MOBILE = process.env.ENOS_MOBILE === '1';
+const MOBILE = process.argv.includes('--mobile') || process.env.ENOS_MOBILE === '1';
 const VIEWPORT = MOBILE
   ? { width: 390, height: 844, screenWidth: 390, screenHeight: 844, deviceScaleFactor: 1, mobile: true }
   : { width: 1440, height: 1000, screenWidth: 1440, screenHeight: 1000, deviceScaleFactor: 1, mobile: false };
@@ -210,6 +210,11 @@ async function main() {
     await cdp.screenshot('video-search.png');
 
     console.log('2. workspace navigation and settings');
+    await cdp.evaluate(`(async () => {
+      const { saveSettings } = await import('/js/store.js');
+      saveSettings({ provider: 'custom', keys: { custom: 'fixture-key-not-secret' }, baseUrls: { custom: 'https://fixture.invalid/v1' }, models: { custom: 'fixture-model' }, youtubeKey: 'fixture-youtube-key', aiMode: 'off' });
+      localStorage.setItem('fixture.untouched', 'keep');
+    })()`);
     await cdp.evaluate(`document.getElementById('rail-settings').click()`);
     await cdp.waitFor(`document.querySelector('#settings-view .provider-tab')`);
     const workspaceChecks = await cdp.evaluate(`(() => {
@@ -219,6 +224,8 @@ async function main() {
       return {
         tabsInRail: [...document.querySelectorAll('.studio-tab')].length === 3 && [...document.querySelectorAll('.studio-tab')].every((button) => button.closest('.studio-rail')),
         libraryRemoved: !document.getElementById('rail-videos') && !document.querySelector('.studio-main > .studio-tabs'),
+        standaloneChatRemoved: !document.getElementById('rail-chat') && !document.getElementById('chat-view'),
+        legacySettingsRemoved: !view.querySelector('input[type="range"], select') && !/学习报告|模型与语音|本地引擎/.test(view.textContent),
         leftRail: rail.left === 0 && rail.height === innerHeight,
         settingsAtBottom: settings.bottom > innerHeight - 80 && settings.right <= rail.right,
         cleanChrome: !document.querySelector('.studio-topbar, .studio-brand, .studio-wordmark, .rail-home, #nav'),
@@ -228,6 +235,52 @@ async function main() {
       };
     })()`);
     await cdp.screenshot(MOBILE ? 'workspace-settings-mobile.png' : 'workspace-settings.png');
+    await cdp.evaluate(`(() => {
+      window.__settingsResetButton = [...document.querySelectorAll('#settings-view button')].find((button) => button.textContent === '恢复默认设置');
+      window.__settingsResetButton.focus();
+      window.__settingsResetButton.click();
+    })()`);
+    await cdp.waitFor(`document.querySelector('#modal-root dialog[open]')`);
+    workspaceChecks.confirmationIsModal = await cdp.evaluate(`document.querySelector('#modal-root dialog').matches(':modal') && document.querySelector('#modal-root dialog').contains(document.activeElement)`);
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await cdp.waitFor(`!document.querySelector('#modal-root dialog')`);
+    workspaceChecks.cancelKeepsSettings = await cdp.evaluate(`(async () => {
+      const { getSettings } = await import('/js/store.js');
+      const settings = getSettings();
+      return settings.provider === 'custom' && settings.models.custom === 'fixture-model' && document.activeElement === window.__settingsResetButton;
+    })()`);
+    await cdp.evaluate(`window.__settingsResetButton.click()`);
+    await cdp.waitFor(`document.querySelector('#modal-root dialog[open]')`);
+    await cdp.evaluate(`document.querySelector('#modal-root .btn-primary').click()`);
+    await cdp.waitFor(`!document.querySelector('#modal-root dialog')`);
+    workspaceChecks.restorePreservesKeys = await cdp.evaluate(`(async () => {
+      const { getSettings } = await import('/js/store.js');
+      const settings = getSettings();
+      [...document.querySelectorAll('#settings-view .provider-tab')].find((button) => button.textContent.includes('自定义')).click();
+      const inputs = [...document.querySelectorAll('#settings-view input')];
+      return settings.provider === 'deepseek' && settings.aiMode === 'auto' && settings.keys.custom === 'fixture-key-not-secret' && settings.youtubeKey === 'fixture-youtube-key'
+        && Object.keys(settings.baseUrls).length === 0 && Object.keys(settings.models).length === 0
+        && inputs.some((input) => input.value === 'fixture-key-not-secret') && inputs.some((input) => input.value === 'fixture-youtube-key')
+        && !inputs.some((input) => ['fixture-model', 'https://fixture.invalid/v1'].includes(input.value));
+    })()`);
+    await cdp.evaluate(`(() => {
+      window.__settingsClearButton = [...document.querySelectorAll('#settings-view button')].find((button) => button.textContent === '清空全部数据');
+      window.__settingsClearButton.focus();
+      window.__settingsClearButton.click();
+    })()`);
+    await cdp.waitFor(`document.querySelector('#modal-root dialog[open]')`);
+    await cdp.evaluate(`document.querySelector('#modal-root .btn-ghost').click()`);
+    workspaceChecks.clearCancelRestoresFocus = await cdp.evaluate(`!document.querySelector('#modal-root dialog') && document.activeElement === window.__settingsClearButton`);
+    await cdp.evaluate(`window.__settingsClearButton.click()`);
+    await cdp.waitFor(`document.querySelector('#modal-root dialog[open]')`);
+    await cdp.evaluate(`document.querySelector('#modal-root .btn-primary').click()`);
+    await cdp.waitFor(`document.getElementById('settings-view').classList.contains('hidden')`);
+    workspaceChecks.clearIsScoped = await cdp.evaluate(`(() => {
+      const ok = !Object.keys(localStorage).some((key) => key.startsWith('enos.')) && localStorage.getItem('fixture.untouched') === 'keep';
+      localStorage.removeItem('fixture.untouched');
+      return ok;
+    })()`);
     await cdp.send('Page.navigate', { url: `${BASE}/?debug=1#/settings` });
     await cdp.waitFor(`window.__VIDEOS_DEBUG__ && document.querySelector('#settings-view .provider-tab')`);
     workspaceChecks.legacySettings = await cdp.evaluate(`new URL(location.href).searchParams.get('view') === 'settings' && !document.querySelector('#nav')`);
@@ -499,11 +552,11 @@ async function main() {
         return Promise.resolve(new Response(JSON.stringify(${JSON.stringify({
       channels: [
         { id: 'economist', name: 'The Economist', short: 'TE', accent: '#b51d23', count: 1 },
-        { id: 'new-scientist', name: 'New Scientist', short: 'NS', accent: '#246b63', count: 1 },
+        { id: 'new-yorker', name: 'The New Yorker', short: 'NY', accent: '#246b63', count: 1 },
       ],
       books: [
-        { id: 'economist-2026-10-24', category: 'economist', magazine: 'The Economist', short: 'TE', accent: '#b51d23', title: 'The Economist · 2026-10-24', date: '2026-10-24', readable: true, formats: [{ format: 'epub', sizeLabel: '8 MB' }] },
-        { id: 'new-scientist-2026-10-24', category: 'new-scientist', magazine: 'New Scientist', short: 'NS', accent: '#246b63', title: 'New Scientist · 2026-10-24', date: '2026-10-24', readable: true, formats: [{ format: 'epub', sizeLabel: '6 MB' }, { format: 'pdf', sizeLabel: '12 MB' }] },
+        { id: 'economist-2026-10-24', category: 'economist', magazine: 'The Economist', short: 'TE', accent: '#b51d23', title: 'The Economist · 2026-10-24', date: '2026-10-24', readable: true, sourceUrl: 'https://github.com/hehonghui/awesome-english-ebooks', formats: [{ format: 'epub', sizeLabel: '8 MB' }] },
+        { id: 'new-yorker-2026-10-24', category: 'new-yorker', magazine: 'The New Yorker', short: 'NY', accent: '#246b63', title: 'The New Yorker · 2026-10-24', date: '2026-10-24', readable: true, sourceUrl: 'https://github.com/hehonghui/awesome-english-ebooks', formats: [{ format: 'epub', sizeLabel: '6 MB' }, { format: 'pdf', sizeLabel: '12 MB' }] },
       ],
     })}), { status: 200, headers: { 'Content-Type': 'application/json' } }));
       };
@@ -525,64 +578,40 @@ async function main() {
     booksChecks.categorySwitches = await cdp.evaluate(`document.querySelectorAll('#books-grid .book-card').length === 1 && document.querySelector('#books-grid .book-card h2').textContent.includes('The Economist')`);
     await cdp.evaluate(`document.querySelector('#channel-list .tree-main').click()`);
     booksChecks.allBooksReturn = await cdp.evaluate(`document.querySelectorAll('#books-grid .book-card').length === 2`);
-    console.log('  books', JSON.stringify(booksChecks));
     await cdp.screenshot(MOBILE ? 'books-mobile.png' : 'books.png');
-
-    console.log('6. watch fixture');
-    await cdp.send('Page.navigate', { url: `${BASE}/watch.html?v=abc12345678&debug=1` });
-    await cdp.waitFor(`window.__WATCH_DEBUG__`);
-    await sleep(300);
-    await cdp.evaluate(`window.__WATCH_DEBUG__.setData(${JSON.stringify({
-      videoId: 'abc12345678',
-      title: 'How cities stay cool',
-      channel: 'EnOS Demo · TED-Ed',
-      duration: '4:12',
-      durationSeconds: 252,
-      viewCount: '1.2M views',
-      thumbnail: POSTER,
-      hasCaptions: true,
-      hasChinese: true,
-      source: 'youtube',
-      cues: CUES,
-    })})`);
     await cdp.evaluate(`(() => {
-      const mount = document.getElementById('yt-player');
-      mount.style.background = 'linear-gradient(rgba(10,12,20,.15), rgba(10,12,20,.15)), url("${POSTER}") center/cover';
-      document.getElementById('player-fallback').classList.add('hidden');
-    })()`);
-    await cdp.evaluate(`window.__WATCH_DEBUG__.sync(1.2)`);
-    await sleep(500);
-    await cdp.screenshot('watch.png');
-
-    const state = await cdp.evaluate(`(() => {
-      const debug = window.__WATCH_DEBUG__.state;
-      return {
-        cues: debug.cues.length,
-        activeCue: debug.activeCue,
-        activeWord: debug.activeWord,
-        activeChars: debug.activeChars,
-        activeWordText: document.querySelector('.word.active')?.textContent || '',
-        activeZhChars: document.querySelectorAll('.zh-char.active').length,
-        enCues: document.querySelectorAll('#sub-en .cue').length,
-        zhCues: document.querySelectorAll('#sub-en .cue .zh-text').length,
-        title: document.querySelector('.watch-head h1')?.textContent,
-        scrollWidth: document.documentElement.scrollWidth,
-        innerWidth: window.innerWidth,
+      const originalFetch = window.fetch;
+      window.fetch = (resource, options) => {
+        if (!String(resource).startsWith('/api/books/read?')) return originalFetch.call(window, resource, options);
+        window.fetch = originalFetch;
+        return Promise.resolve(new Response(JSON.stringify({
+          book: { title: 'The Economist · 2026-10-24', magazine: 'The Economist', date: '2026-10-24', wordCount: 1260 },
+          chapters: [
+            { title: 'The value of shade', wordCount: 620, blocks: [{ type: 'heading', text: 'Cities and trees' }, { type: 'paragraph', text: 'A shaded street invites people to walk. <strong>This stays plain text.</strong>' }] },
+            { title: 'A cooler neighbourhood', wordCount: 640, blocks: [{ type: 'paragraph', text: 'Public transport connects communities.' }, { type: 'bullet', text: 'Reliable routes matter.' }] },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
       };
+      document.querySelector('#books-grid .book-card').click();
     })()`);
-    console.log('  state', JSON.stringify(state));
-
-    if (MOBILE) {
-      await cdp.evaluate(`document.querySelectorAll('.cue')[1]?.scrollIntoView({ block: 'center' })`);
-      await cdp.screenshot('watch-mobile.png');
-    }
+    await cdp.waitFor(`document.querySelectorAll('.book-toc-item').length === 2`);
+    booksChecks.readerOpens = await cdp.evaluate(`!document.getElementById('book-reader').classList.contains('hidden') && document.querySelector('.book-chapter-title').textContent === 'The value of shade' && document.querySelector('.book-chapter-nav button').disabled`);
+    booksChecks.readerUsesText = await cdp.evaluate(`!document.querySelector('#book-content .book-block strong') && document.getElementById('book-content').textContent.includes('<strong>This stays plain text.</strong>')`);
+    booksChecks.downloadLinks = await cdp.evaluate(`document.querySelector('#book-actions a[download]').getAttribute('href') === '/api/books/file?category=economist&date=2026-10-24&format=epub' && document.querySelector('#book-actions a[target="_blank"]').rel.includes('noopener')`);
+    await cdp.screenshot(MOBILE ? 'books-reader-mobile.png' : 'books-reader.png');
+    await cdp.evaluate(`document.querySelector('.book-chapter-nav button:last-child').click()`);
+    booksChecks.nextChapter = await cdp.evaluate(`document.querySelector('.book-chapter-title').textContent === 'A cooler neighbourhood' && document.querySelector('.book-chapter-nav button:last-child').disabled && document.querySelectorAll('.book-toc-item')[1].classList.contains('active')`);
+    await cdp.evaluate(`document.querySelector('.book-chapter-nav button').click()`);
+    booksChecks.previousChapter = await cdp.evaluate(`document.querySelector('.book-chapter-title').textContent === 'The value of shade'`);
+    await cdp.evaluate(`document.querySelectorAll('.book-toc-item')[1].click()`);
+    booksChecks.tableOfContents = await cdp.evaluate(`document.querySelector('.book-chapter-title').textContent === 'A cooler neighbourhood'`);
+    booksChecks.readerNoOverflow = await cdp.evaluate(`document.documentElement.scrollWidth <= innerWidth + 1 && document.getElementById('book-content').scrollWidth <= document.getElementById('book-content').clientWidth + 1`);
+    await cdp.evaluate(`document.getElementById('book-back').click()`);
+    booksChecks.readerReturns = await cdp.evaluate(`document.getElementById('book-reader').classList.contains('hidden') && document.querySelectorAll('#books-grid .book-card').length === 2`);
+    console.log('  books', JSON.stringify(booksChecks));
 
     const checks = {
-      ok: state.cues === 4 && state.activeCue === 0 && state.activeWord >= 0
-        && state.activeWordText && state.activeZhChars > 0
-        && state.enCues === 4 && state.zhCues === 4
-        && state.scrollWidth <= state.innerWidth + 1
-        && Object.entries(podcastChecks).every(([key, value]) => key === 'title' || value === true)
+      ok: Object.entries(podcastChecks).every(([key, value]) => key === 'title' || value === true)
         && Object.values(booksChecks).every((value) => value === true)
         && Object.values(detailChecks).every((value) => value === true)
         && Object.values(workspaceChecks).every((value) => value === true),
@@ -590,7 +619,6 @@ async function main() {
       detail: detailChecks,
       podcast: podcastChecks,
       books: booksChecks,
-      state,
       consoleErrors: cdp.logs,
       exceptions: cdp.exceptions,
     };

@@ -1,4 +1,5 @@
-import { getHealth, getProviders, providerHasEnvKey, testConnection } from '../api.js';import { clearAllData, getSettings, listSessions, resetSettings, saveSettings } from '../store.js';
+import { getHealth, getProviders, providerHasEnvKey, testConnection } from '../api.js';
+import { clearAllData, getSettings, resetSettings, saveSettings } from '../store.js';
 import { h, icon, modal, toast } from '../ui.js';
 
 export async function renderSettings(ctx) {
@@ -7,7 +8,7 @@ export async function renderSettings(ctx) {
   let keyVisible = false;
   let youtubeVisible = false;
   let testing = false;
-  const draft = {
+  let draft = {
     keys: { ...getSettings().keys },
     baseUrls: { ...getSettings().baseUrls },
     models: { ...getSettings().models },
@@ -40,7 +41,7 @@ export async function renderSettings(ctx) {
         renderTabs();
         renderPanel();
       },
-    }, h('strong', {}, item.label), h('span', {}, item.search === 'none' ? '搜索：维基兜底' : `搜索：${item.search}`))));
+    }, h('strong', {}, item.label), h('span', {}, item.model))));
   }
 
   function renderPanel() {
@@ -89,31 +90,12 @@ export async function renderSettings(ctx) {
 
     const modelList = h('datalist', { id: 'model-options' }, (meta.models || []).map((name) => h('option', { value: name })));
 
-    const rate = getSettings().voiceRate;
-    const rateInput = h('input', {
-      type: 'range', min: '0.65', max: '1.2', step: '0.05', value: String(rate), 'aria-label': '语速',
-      oninput: (event) => {
-        const value = Number(event.target.value);
-        persist({ voiceRate: value });
-        rateValue.textContent = `${value.toFixed(2)}x`;
-      },
-    });
-    const rateValue = h('span', { class: 'badge' }, `${Number(rate).toFixed(2)}x`);
-
-    const voiceLang = h('select', {
-      class: 'select',
-      onchange: (event) => persist({ voiceLang: event.target.value }),
-    }, [
-      ['en-GB', '英式英语 en-GB'], ['en-US', '美式英语 en-US'], ['en-AU', '澳式英语 en-AU'],
-    ].map(([value, label]) => h('option', { value, selected: getSettings().voiceLang === value }, label)));
-
     const aiToggle = h('input', {
       type: 'checkbox',
       checked: getSettings().aiMode !== 'off',
       onchange: (event) => {
         persist({ aiMode: event.target.checked ? 'auto' : 'off' });
-        ctx.updateStatusPill();
-        toast(event.target.checked ? 'AI 增强已开启' : '已切换为纯本地引擎', 'ok', 2000);
+        toast(event.target.checked ? '模型请求已开启' : '模型请求已关闭', 'ok', 2000);
       },
     });
 
@@ -126,7 +108,7 @@ export async function renderSettings(ctx) {
             renderPanel();
           } }, h('span', { html: icon(keyVisible ? 'lock' : 'key', 17) })),
         ),
-        h('div', { class: 'hint' }, '密钥只保存在浏览器 localStorage，并发送给本机的 EnOS 服务端转发；服务端不落盘、不写日志。'),
+        h('div', { class: 'hint' }, '浏览器密钥以明文保存在 localStorage，请勿在共享设备上保存。也可改用服务端环境变量。'),
       ),
       h('div', { class: 'field-row' },
         h('div', { class: 'field' }, h('label', {}, 'Base URL'), baseInput,
@@ -147,12 +129,8 @@ export async function renderSettings(ctx) {
         meta.docs ? h('a', { class: 'link-btn', href: meta.docs, target: '_blank', rel: 'noreferrer' }, '获取 API Key ↗') : null,
       ),
       testResult,
-      h('div', { class: 'field-row', style: 'margin-top:18px' },
-        h('div', { class: 'field' }, h('label', {}, '朗读语速 ', rateValue), rateInput),
-        h('div', { class: 'field' }, h('label', {}, '示范语音'), voiceLang),
-      ),
       h('div', { class: 'switch-row' },
-        h('div', {}, h('p', {}, 'AI 增强'), h('small', {}, '关闭后全程使用本地引擎：不发出任何模型请求。')),
+        h('div', {}, h('p', {}, '模型翻译与问答'), h('small', {}, '关闭后不自动请求模型；字幕仍可能通过免费翻译服务处理。')),
         h('label', { class: 'switch' }, aiToggle, h('span', { class: 'track' }), h('span', { class: 'thumb' })),
       ),
     );
@@ -160,7 +138,6 @@ export async function renderSettings(ctx) {
   }
 
   function updateHealthNote() {
-    const meta = provider();
     const hasEnv = providerHasEnvKey(activeId);
     const typed = Boolean((draft.keys[activeId] || '').trim());
     if (hasEnv || typed) {
@@ -195,7 +172,6 @@ export async function renderSettings(ctx) {
     }
   }
 
-  const sessions = listSessions();
   const youtubeKeyInput = h('input', {
     class: 'input',
     type: youtubeVisible ? 'text' : 'password',
@@ -227,27 +203,23 @@ export async function renderSettings(ctx) {
 
   const dataCard = h('div', { class: 'card settings-card' },
     h('h3', {}, h('span', { html: icon('trash', 18) }), '本机数据'),
-    h('p', { class: 'small muted', style: 'margin-top:6px' }, `已保存 ${sessions.length} 份学习报告。清空后不可恢复。`),
+    h('p', { class: 'small muted', style: 'margin-top:6px' }, '浏览器中保存的密钥、模型配置和播放偏好。清空不会更改服务端环境变量。'),
     h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:12px' },
       h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async () => {
-        const ok = await modal({ title: '清空本机数据？', body: '会删除所有 API Key、进行中的学习和历史报告。此操作不可撤销。', actions: [{ label: '取消', value: false }, { label: '清空', value: true, primary: true }] });
+        const ok = await modal({ title: '清空本机数据？', body: '会删除本应用在此浏览器中保存的密钥、配置与播放偏好。此操作不可撤销。', actions: [{ label: '取消', value: false }, { label: '清空', value: true, primary: true }] });
         if (!ok) return;
         clearAllData();
-        resetSettings();
-        ctx.updateStatusPill();
+        refreshDraft();
         toast('本机数据已清空', 'ok');
-        ctx.navigate('home');
+        ctx.navigate();
       } }, '清空全部数据'),
       h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async () => {
-        const ok = await modal({ title: '恢复默认设置？', body: '服务商、模型和语音设置会回到初始值，已保存的 Key 会保留。', actions: [{ label: '取消', value: false }, { label: '恢复', value: true, primary: true }] });
+        const ok = await modal({ title: '恢复默认设置？', body: '服务商、模型与模型开关恢复默认。已保存的模型密钥和 YouTube 密钥会保留。', actions: [{ label: '取消', value: false }, { label: '恢复', value: true, primary: true }] });
         if (!ok) return;
-        const keys = { ...getSettings().keys };
+        const { keys, youtubeKey } = getSettings();
         resetSettings();
-        saveSettings({ keys });
-        activeId = 'deepseek';
-        renderTabs();
-        renderPanel();
-        ctx.updateStatusPill();
+        saveSettings({ keys, youtubeKey });
+        refreshDraft();
         toast('已恢复默认设置', 'ok');
       } }, '恢复默认设置'),
     ),
@@ -255,21 +227,21 @@ export async function renderSettings(ctx) {
 
   const explainer = h('div', { class: 'card settings-card' },
     h('h3', {}, h('span', { html: icon('lock', 18) }), '密钥与隐私'),
-    h('div', { class: 'callout', style: 'margin-top:10px', html: `${icon('info', 16)}<span>EnOS 没有账号系统。Key 存在 localStorage，随每次请求发送到本机运行的 Node 服务，再由服务转发给对应厂商。关闭页面后不会上传到任何第三方服务器。</span>` }),
-    h('div', { class: 'callout', style: 'margin-top:8px', html: `${icon('search', 16)}<span>联网搜索优先使用服务商能力：DeepSeek <code>/v1/tools/search</code>、Kimi <code>/v1/tools/search</code>、智谱 <code>/web_search</code>；无法使用时自动切换到维基百科与 DuckDuckGo。</span>` }),
+    h('div', { class: 'callout', style: 'margin-top:10px', html: `${icon('info', 16)}<span>没有账号或服务端密钥存储。模型请求由 Node 服务转发到所选 Base URL；字幕上下文和问题会发送给对应服务商。请只使用可信地址。</span>` }),
+    h('div', { class: 'callout', style: 'margin-top:8px', html: `${icon('lock', 16)}<span>环境密钥仅可用于服务端配置的模型地址。YouTube、播客、图书和免费字幕翻译也需要访问各自的第三方服务。本应用默认仅供本机使用。</span>` }),
   );
 
   el.append(
     h('div', { class: 'page-head' },
       h('p', { class: 'eyebrow' }, 'Settings'),
-      h('h1', {}, '模型与语音'),
-      h('p', { class: 'lede' }, '选择服务商，填入自己的 API Key。所有模型调用都从本机服务转发，Key 不会写进代码或日志。'),
+      h('h1', {}, '设置'),
+      h('p', { class: 'lede' }, '模型服务、YouTube 搜索与本机数据。'),
     ),
     h('div', { class: 'settings-grid' },
       h('div', {},
         h('div', { class: 'card settings-card' },
           h('h3', {}, h('span', { html: icon('key', 18) }), '服务商'),
-          h('p', { class: 'small muted', style: 'margin-top:6px' }, '四家都已适配 chat 与 search；自定义服务需兼容 OpenAI /chat/completions。'),
+          h('p', { class: 'small muted', style: 'margin-top:6px' }, '用于字幕翻译和视频内问答；自定义服务需兼容 OpenAI /chat/completions。'),
           tabs,
           panel,
         ),
@@ -281,6 +253,15 @@ export async function renderSettings(ctx) {
       ),
     ),
   );
+
+  function refreshDraft() {
+    const settings = getSettings();
+    activeId = settings.provider;
+    draft = { keys: { ...settings.keys }, baseUrls: { ...settings.baseUrls }, models: { ...settings.models } };
+    youtubeKeyInput.value = settings.youtubeKey;
+    renderTabs();
+    renderPanel();
+  }
 
   renderTabs();
   renderPanel();

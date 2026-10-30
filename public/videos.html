@@ -9,7 +9,7 @@
   <link rel="icon" href="/favicon.svg?v=knowledge-k" type="image/svg+xml" />
   <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png?v=knowledge-k" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=knowledge-k" />
-  <link rel="stylesheet" href="/css/app.css" />
+  <link rel="stylesheet" href="/css/base.css" />
   <link rel="stylesheet" href="/css/studio.css" />
 </head>
 <body class="studio-body">
@@ -23,13 +23,6 @@
           <button class="rail-btn studio-tab" id="tab-books" type="button" role="tab" title="图书" aria-selected="false" aria-controls="books-pane" data-tab="books" tabindex="-1"><span data-icon="book"></span><span>图书</span></button>
         </div>
         <button class="rail-btn tree-open-btn hidden" id="tree-open" type="button" aria-label="打开频道导航" aria-controls="channel-tree" aria-expanded="false" title="打开频道导航"><span data-icon="chevronRight"></span><span>频道</span></button>
-        <button class="rail-btn" id="rail-chat" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M20.5 11.5a7.5 7.5 0 0 1-7.5 7.5H8l-4 2v-5.2a7.5 7.5 0 0 1-1-3.8A7.5 7.5 0 0 1 10.5 4h2.5a7.5 7.5 0 0 1 7.5 7.5z"/>
-            <path d="M8 11h8M8 14h5"/>
-          </svg>
-          <span>对话</span>
-        </button>
       </nav>
       <button class="rail-btn rail-settings" id="rail-settings" type="button" title="设置" aria-label="设置"><span data-icon="settings"></span><span>设置</span></button>
     </aside>
@@ -181,24 +174,6 @@
 
       <section class="settings-view hidden" id="settings-view" aria-label="设置" tabindex="-1"></section>
 
-      <section class="chat-view hidden" id="chat-view">
-        <div class="chat-shell">
-          <div class="chat-heading"><span data-icon="sparkles"></span><h1>学习对话</h1><span>EnOS Agent</span></div>
-          <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
-          <form class="chat-form" id="chat-form">
-            <textarea id="chat-input" rows="2" maxlength="2000" placeholder="问 Agent：帮我解释这段英文…"></textarea>
-            <button class="btn btn-primary" id="chat-send" type="submit" title="发送" aria-label="发送"><span data-icon="send"></span></button>
-          </form>
-        </div>
-      </section>
-
-      <section class="studio-empty hidden" id="tab-empty">
-        <div>
-          <p class="eyebrow" id="tab-empty-eyebrow">COMING SOON</p>
-          <h2 id="tab-empty-title">图书暂未接入</h2>
-          <p id="tab-empty-text">入口先保留在这里，后续可以接入英文图书与章节精读。</p>
-        </div>
-      </section>
     </div>
   </div>
 

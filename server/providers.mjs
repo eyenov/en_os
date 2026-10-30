@@ -20,8 +20,7 @@ export const PROVIDERS = {
     models: ['deepseek-flash', 'deepseek-v4-pro'],
     keyEnv: 'DEEPSEEK_API_KEY',
     docs: 'https://platform.deepseek.com',
-    note: '深度求索官方 API，支持 JSON 输出与工具调用；自带 Search / Fetch 接口。',
-    search: 'deepseek',
+    note: '用于字幕翻译与视频内问答。',
     thinking: true,
   },
   kimi: {
@@ -33,7 +32,6 @@ export const PROVIDERS = {
     keyEnv: 'MOONSHOT_API_KEY',
     docs: 'https://platform.kimi.com',
     note: '国内站 base URL 为 api.moonshot.cn；国际站可改为 https://api.moonshot.ai/v1。',
-    search: 'kimi',
   },
   zhipu: {
     id: 'zhipu',
@@ -43,8 +41,7 @@ export const PROVIDERS = {
     models: ['glm-5.3-flash', 'glm-5.3', 'glm-4-flash'],
     keyEnv: 'ZHIPU_API_KEY',
     docs: 'https://bigmodel.cn',
-    note: '使用 /web_search 工具接口联网搜索，按次计费。',
-    search: 'zhipu',
+    note: '用于字幕翻译与视频内问答。',
   },
   mimo: {
     id: 'mimo',
@@ -55,7 +52,6 @@ export const PROVIDERS = {
     keyEnv: 'MIMO_API_KEY',
     docs: 'https://platform.xiaomimimo.com',
     note: 'OpenAI 兼容协议；Token Plan 用户请把 base URL 换成专属地址。',
-    search: 'none',
   },
   custom: {
     id: 'custom',
@@ -65,8 +61,7 @@ export const PROVIDERS = {
     models: [],
     keyEnv: 'CUSTOM_API_KEY',
     docs: '',
-    note: '任何兼容 /chat/completions 的服务都可以接入；搜索将使用维基百科兜底。',
-    search: 'none',
+    note: '兼容 OpenAI /chat/completions 的服务。',
   },
 };
 
@@ -74,12 +69,11 @@ export function publicProviders() {
   return Object.values(PROVIDERS).map((provider) => ({
     id: provider.id,
     label: provider.label,
-    baseUrl: provider.baseUrl,
+    baseUrl: process.env[provider.keyEnv.replace(/_API_KEY$/, '_BASE_URL')] || provider.baseUrl,
     model: provider.model,
     models: provider.models,
     docs: provider.docs,
     note: provider.note,
-    search: provider.search,
     hasEnvKey: Boolean(process.env[provider.keyEnv]),
   }));
 }
@@ -95,7 +89,10 @@ function validateBaseUrl(value) {
   } catch {
     throw new HttpError(400, 'Base URL 不是合法网址。', 'BAD_BASE_URL');
   }
-  const local = ['127.0.0.1', 'localhost', '::1'].includes(url.hostname);
+  if (url.username || url.password || url.search || url.hash) {
+    throw new HttpError(400, 'Base URL 不能包含凭据、查询参数或片段。', 'BAD_BASE_URL');
+  }
+  const local = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) {
     throw new HttpError(400, 'Base URL 必须是 https（本地调试允许 http://localhost）。', 'BAD_BASE_URL');
   }
@@ -106,11 +103,16 @@ export function resolveRequest(body = {}) {
   const providerId = String(body.provider || 'deepseek');
   const provider = PROVIDERS[providerId];
   if (!provider) throw new HttpError(400, `未知的服务商：${providerId}`, 'BAD_PROVIDER');
-  const apiKey = String(body.apiKey || process.env[provider.keyEnv] || '').trim();
+  const explicitKey = String(body.apiKey || '').trim();
+  const apiKey = explicitKey || String(process.env[provider.keyEnv] || '').trim();
   if (!apiKey) {
     throw new HttpError(401, '还没有配置 API Key。请到「设置」填写，或给服务端设置对应环境变量。', 'NO_KEY');
   }
-  const baseUrl = validateBaseUrl(body.baseUrl || provider.baseUrl);
+  const serverBaseUrl = validateBaseUrl(process.env[provider.keyEnv.replace(/_API_KEY$/, '_BASE_URL')] || provider.baseUrl);
+  const baseUrl = validateBaseUrl(body.baseUrl || serverBaseUrl);
+  if (!explicitKey && baseUrl !== serverBaseUrl) {
+    throw new HttpError(403, '环境密钥只能用于服务端配置的 Base URL。', 'KEY_SCOPE');
+  }
   const model = String(body.model || provider.model).trim();
   if (!model) throw new HttpError(400, '缺少模型名称。', 'NO_MODEL');
   return { provider, providerId, apiKey, baseUrl, model };
@@ -171,6 +173,7 @@ export async function createChatCompletion({
       },
       body: JSON.stringify(payload),
       signal: controller.signal,
+      redirect: 'error',
     });
   } catch (error) {
     clearTimeout(timeout);
@@ -196,7 +199,8 @@ export async function createChatCompletion({
     }
     const status = response.status === 401 ? 401 : response.status === 429 ? 429 : response.status >= 500 ? 502 : 400;
     const code = response.status === 401 ? 'BAD_KEY' : response.status === 429 ? 'RATE_LIMIT' : 'UPSTREAM_ERROR';
-    throw new HttpError(status, `上游返回 ${response.status}：${detail || response.statusText}`, code);
+    const safeDetail = String(detail || response.statusText).replaceAll(apiKey, '[redacted]').slice(0, 300);
+    throw new HttpError(status, `上游返回 ${response.status}：${safeDetail}`, code);
   }
 
   const cleanup = () => {
