@@ -293,7 +293,39 @@ async function main() {
     await cdp.evaluate(`document.getElementById('podcast-play').click()`);
     await cdp.waitFor(`document.getElementById('podcast-audio').currentTime > 0.55 && !document.getElementById('podcast-audio').paused`);
     const playing = await cdp.evaluate(`!document.getElementById('podcast-audio').paused && window.__VIDEOS_DEBUG__.podcastState.activeCue === 0`);
+    const waveformAnimated = await cdp.evaluate(`(async () => {
+      const canvas = document.getElementById('podcast-wave');
+      const context = canvas.getContext('2d');
+      const left = Math.floor(canvas.width * 0.25);
+      const width = Math.floor(canvas.width * 0.65);
+      const first = context.getImageData(left, 0, width, canvas.height).data;
+      await new Promise((resolve) => setTimeout(resolve, 220));
+      const second = context.getImageData(left, 0, width, canvas.height).data;
+      let changed = 0;
+      for (let index = 3; index < first.length; index += 4) {
+        if (Math.abs(first[index] - second[index]) > 12) changed += 1;
+      }
+      return changed > width * canvas.height * 0.03;
+    })()`);
+    const waveformAmplitude = await cdp.evaluate(`(() => {
+      const canvas = document.getElementById('podcast-wave');
+      const width = Math.floor(canvas.width * 0.65);
+      const pixels = canvas.getContext('2d').getImageData(Math.floor(canvas.width * 0.25), 0, width, canvas.height).data;
+      let filled = 0;
+      for (let index = 3; index < pixels.length; index += 4) {
+        if (pixels[index] > 24) filled += 1;
+      }
+      return filled > width * canvas.height * 0.3;
+    })()`);
+    await cdp.screenshot(MOBILE ? 'podcast-wave-playing-mobile.png' : 'podcast-wave-playing.png');
     await cdp.evaluate(`document.getElementById('podcast-audio').pause()`);
+    const waveformPauses = await cdp.evaluate(`(async () => {
+      const canvas = document.getElementById('podcast-wave');
+      await new Promise(requestAnimationFrame);
+      const first = canvas.toDataURL();
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return canvas.toDataURL() === first;
+    })()`);
     const wordTime = (PODCAST_CUES[0].words[1].start + PODCAST_CUES[0].words[1].end) / 2;
     await cdp.evaluate(`document.getElementById('podcast-audio').currentTime = ${wordTime}`);
     await cdp.waitFor(`window.__VIDEOS_DEBUG__.podcastState.activeWord === 1`);
@@ -365,6 +397,7 @@ async function main() {
         noOverflow: document.documentElement.scrollWidth <= innerWidth + 1,
         compactHeader: header.top === pane.top && header.height <= 56 && player.bottom - pane.top <= ${MOBILE ? 135 : 112} && !document.querySelector('.podcast-top img, .podcast-top p'),
         subtitleToolbarRemoved: !document.querySelector('.podcast-sub-head') && Math.abs(document.querySelector('.podcast-sub-columns').getBoundingClientRect().top - player.bottom) < 2,
+        subtitleLabelsRemoved: !document.querySelector('.podcast-col-title, .podcast-col-note') && Math.abs(document.getElementById('podcast-en').getBoundingClientRect().top - document.querySelector('.podcast-sub-columns').getBoundingClientRect().top) <= 1,
         downloadAtRight: download.width > 0 && download.right >= header.right - 22 && download.top >= header.top && download.bottom <= header.bottom,
         readable: document.getElementById('podcast-en').clientHeight > 120,
         translated: ${MOBILE} ? getComputedStyle(document.querySelector('.podcast-inline-zh')).display !== 'none' : true,
@@ -373,7 +406,7 @@ async function main() {
         title: document.getElementById('podcast-title').textContent,
       };
     })()`);
-    const podcastChecks = { verticalTabs, details, detailsEscape, detailsClose, subtitleDownload, playbackSettings, playbackSettingsEscape, playing, seeking, silence, calibration, navigation, follow, drawer, smallScreen, ...podcastLayout };
+    const podcastChecks = { verticalTabs, details, detailsEscape, detailsClose, subtitleDownload, playbackSettings, playbackSettingsEscape, playing, waveformAnimated, waveformAmplitude, waveformPauses, seeking, silence, calibration, navigation, follow, drawer, smallScreen, ...podcastLayout };
     console.log('  podcast', JSON.stringify(podcastChecks));
     await cdp.screenshot(MOBILE ? 'podcast-mobile.png' : 'podcast.png');
     await cdp.evaluate(`document.getElementById('podcast-offset-reset').click()`);

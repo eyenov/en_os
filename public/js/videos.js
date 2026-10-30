@@ -947,6 +947,8 @@ function updatePodcastPlayButton() {
       : podcastAudio.paused ? podcastAudio.currentTime > 0 ? '已暂停' : '待播放' : '正在播放';
 }
 
+const podcastMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
 function ensurePodcastAudioGraph() {
   if (podcast.audioCtx || !(window.AudioContext || window.webkitAudioContext)) return;
   try {
@@ -954,7 +956,7 @@ function ensurePodcastAudioGraph() {
     const ctx = new Ctx();
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 1024;
-    analyser.smoothingTimeConstant = 0.82;
+    analyser.smoothingTimeConstant = 0.55;
     const source = ctx.createMediaElementSource(podcastAudio);
     source.connect(analyser);
     analyser.connect(ctx.destination);
@@ -985,25 +987,33 @@ function drawPodcastWave() {
 
   const points = 84;
   const values = [];
+  if (!podcastAudio.paused && !podcastMotion.matches) podcast.wavePhase = podcastAudio.currentTime * 6;
+  const phase = podcast.wavePhase;
   const hasSignal = podcast.analyser && podcast.audioCtx?.state === 'running' && !podcastAudio.paused;
   if (hasSignal) {
     podcast.analyser.getByteFrequencyData(podcast.freqData);
     let peak = 1;
-    for (const value of podcast.freqData) peak = Math.max(peak, value);
+    let power = 0;
+    for (const value of podcast.freqData) {
+      peak = Math.max(peak, value);
+      power += value * value;
+    }
+    const energy = Math.min(1, Math.pow(Math.sqrt(power / podcast.freqData.length) / 28, 0.7));
     for (let index = 0; index < points; index += 1) {
       const bin = Math.floor(Math.pow(index / points, 1.45) * (podcast.freqData.length - 1));
-      const raw = podcast.freqData[bin] / peak;
-      values.push(0.18 + Math.min(0.82, raw) * 0.72);
+      const raw = Math.pow(podcast.freqData[bin] / peak, 0.65);
+      const pulse = 0.5 + Math.sin(index * 0.37 - phase * 1.7) * 0.5;
+      const ripple = 0.5 + Math.sin(index * 0.79 + phase * 1.2) * 0.5;
+      values.push(Math.min(0.98, 0.06 + raw * 0.74 + energy * (0.15 + pulse * 0.52 + ripple * 0.2)));
     }
     podcast.waveValues = values;
   } else if (podcast.waveValues?.length === points) {
     values.push(...podcast.waveValues);
   } else {
-    const phase = performance.now() / 900;
     for (let index = 0; index < points; index += 1) {
       const wave = Math.abs(Math.sin(index * 0.29 + phase)) * 0.55
         + Math.abs(Math.sin(index * 0.071 - phase * 0.7)) * 0.45;
-      values.push(0.1 + wave * 0.34);
+      values.push(0.08 + wave * 0.68);
     }
   }
 
@@ -1011,8 +1021,8 @@ function drawPodcastWave() {
   const progress = podcastDurationValue() ? Math.min(1, Math.max(0, podcastAudio.currentTime / podcastDurationValue())) : 0;
   const playX = width * progress;
 
-  const curve = (color, lineWidth, fill) => {
-    const amp = height * 0.46;
+  const curve = (color, lineWidth, fill, scale = 1) => {
+    const amp = height * 0.46 * scale;
     ctx.beginPath();
     ctx.moveTo(0, mid);
     for (let index = 0; index < points; index += 1) {
@@ -1040,13 +1050,14 @@ function drawPodcastWave() {
     if (lineWidth) { ctx.strokeStyle = color; ctx.lineWidth = lineWidth; ctx.stroke(); }
   };
 
-  curve('rgba(14,143,120,.38)', 1.2, 'rgba(14,143,120,.16)');
+  curve('rgba(14,143,120,.68)', 1.2, 'rgba(14,143,120,.20)');
+  curve('rgba(14,143,120,.38)', 1, null, 0.55);
   if (playX > 0) {
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, 0, playX, height);
     ctx.clip();
-    curve('rgba(14,143,120,.95)', 1.8, 'rgba(14,143,120,.40)');
+    curve('rgba(14,143,120,1)', 1.8, 'rgba(14,143,120,.48)');
     ctx.restore();
   }
   ctx.beginPath();
@@ -1073,7 +1084,7 @@ function drawPodcastWave() {
 }
 
 function startPodcastVisual() {
-  if (podcast.visualFrame) return;
+  if (podcast.visualFrame || podcastMotion.matches) return;
   const tick = () => {
     drawPodcastWave();
     podcast.visualFrame = requestAnimationFrame(tick);
@@ -1085,6 +1096,12 @@ function stopPodcastVisual() {
   if (podcast.visualFrame) cancelAnimationFrame(podcast.visualFrame);
   podcast.visualFrame = null;
 }
+
+podcastMotion.addEventListener('change', () => {
+  stopPodcastVisual();
+  if (!podcastAudio.paused) startPodcastVisual();
+  drawPodcastWave();
+});
 
 async function togglePodcastPlay() {
   if (!podcastAudio.src) return;
