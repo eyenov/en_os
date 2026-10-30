@@ -165,9 +165,9 @@ async function main() {
     await cdp.send('Log.enable');
     await cdp.send('Emulation.setDeviceMetricsOverride', VIEWPORT);
 
-    console.log('1. search landing');
+    console.log('1. search workspace');
     await cdp.send('Page.navigate', { url: `${BASE}/videos.html?debug=1` });
-    await cdp.waitFor(`document.querySelector('.video-hero')`);
+    await cdp.waitFor(`document.querySelector('.studio-shell')`);
     await sleep(500);
     await cdp.screenshot('video-search.png');
 
@@ -197,7 +197,6 @@ async function main() {
       const mount = document.getElementById('yt-player');
       mount.style.background = 'linear-gradient(rgba(10,12,20,.15), rgba(10,12,20,.15)), url("${POSTER}") center/cover';
       document.getElementById('player-fallback').classList.add('hidden');
-      document.getElementById('player-time').textContent = '1:12 / 4:12';
     })()`);
     await cdp.evaluate(`window.__WATCH_DEBUG__.sync(1.2)`);
     await sleep(500);

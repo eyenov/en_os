@@ -4,69 +4,104 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light" />
-  <title>视频精听 · EnOS</title>
-  <meta name="description" content="搜索 YouTube 英文视频，打开逐词高亮的双语字幕播放页。" />
+  <title>视频工作台 · EnOS</title>
+  <meta name="description" content="EnOS 视频工作台：按频道浏览 YouTube 视频，打开逐词双语字幕。" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/css/app.css" />
+  <link rel="stylesheet" href="/css/studio.css" />
 </head>
-<body>
-  <header class="topbar">
-    <a class="brand" href="/" aria-label="EnOS 首页">
-      <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 28 28" fill="none">
+<body class="studio-body">
+  <div class="studio-shell">
+    <aside class="studio-rail" aria-label="主导航">
+      <a class="studio-brand" href="/videos.html" aria-label="EnOS 视频工作台">
+        <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
           <rect x="1" y="1" width="26" height="26" rx="8" fill="currentColor" />
-          <path d="M8 18.5L12.2 10l4 8.5L21 8" stroke="#fffdf7" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M8 18.5L12.2 10l4 8.5L21 8" stroke="#171510" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
           <circle cx="21" cy="8" r="1.8" fill="#c9f27c"/>
         </svg>
-      </span>
-      <span class="brand-word">EnOS<span class="brand-dot">.</span></span>
-      <span class="brand-sub">视频精听</span>
-    </a>
-    <nav class="nav" aria-label="主导航">
-      <a href="/#/home">学习</a>
-      <a href="/#/listening">听力</a>
-      <a href="/videos.html" class="active" aria-current="page">视频</a>
-      <a href="/#/reports">报告</a>
-      <a href="/#/settings">设置</a>
-    </nav>
-    <div class="topbar-right">
-      <a class="btn btn-ghost btn-sm" href="/">回到学习</a>
+      </a>
+      <nav class="studio-rail-nav">
+        <button class="rail-btn active" id="rail-videos" type="button" aria-current="page">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="5" width="18" height="14" rx="3"/>
+            <path d="M10 9.5l5 2.5-5 2.5z" fill="currentColor" stroke="none"/>
+          </svg>
+          <span>视频</span>
+        </button>
+        <button class="rail-btn" id="rail-chat" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20.5 11.5a7.5 7.5 0 0 1-7.5 7.5H8l-4 2v-5.2a7.5 7.5 0 0 1-1-3.8A7.5 7.5 0 0 1 10.5 4h2.5a7.5 7.5 0 0 1 7.5 7.5z"/>
+            <path d="M8 11h8M8 14h5"/>
+          </svg>
+          <span>对话</span>
+        </button>
+      </nav>
+      <div class="studio-rail-foot" aria-hidden="true">ENOS · STUDIO</div>
+    </aside>
+
+    <div class="studio-main">
+      <header class="studio-tabs" role="tablist" aria-label="内容类型">
+        <button class="studio-tab active" id="tab-youtube" type="button" role="tab" aria-selected="true" data-tab="youtube">YouTube</button>
+        <button class="studio-tab" id="tab-podcast" type="button" role="tab" aria-selected="false" data-tab="podcast">播客</button>
+        <button class="studio-tab" id="tab-books" type="button" role="tab" aria-selected="false" data-tab="books">图书</button>
+        <span class="studio-tabs-spacer"></span>
+        <button class="tree-open-btn hidden" id="tree-open" type="button">频道</button>
+      </header>
+
+      <section class="studio-workspace" id="videos-view">
+        <aside class="channel-tree" id="channel-tree">
+          <div class="tree-head">
+            <div>
+              <p class="eyebrow">CHANNELS</p>
+              <h2>频道</h2>
+              <p id="tree-count">搜索后显示频道</p>
+            </div>
+            <button class="tree-collapse" id="tree-collapse" type="button" title="收起频道导航" aria-label="收起频道导航">‹</button>
+          </div>
+          <div class="tree-scroll" id="channel-list"></div>
+        </aside>
+
+        <section class="preview-pane">
+          <div class="preview-top">
+            <form class="studio-search" id="video-search" role="search">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>
+              </svg>
+              <label class="sr-only" for="video-q">搜索 YouTube 视频</label>
+              <input id="video-q" name="q" type="search" placeholder="搜索频道或视频，例如 BBC Learning English" autocomplete="off" />
+              <button class="btn btn-primary" type="submit">搜索</button>
+            </form>
+            <div class="preview-head">
+              <div>
+                <h1 id="preview-title">YouTube</h1>
+                <p id="preview-subtitle">正在读取频道…</p>
+              </div>
+              <span class="preview-source" id="preview-source"></span>
+            </div>
+          </div>
+          <div class="preview-scroll" id="video-results" aria-live="polite"></div>
+        </section>
+      </section>
+
+      <section class="chat-view hidden" id="chat-view">
+        <div class="chat-shell">
+          <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
+          <form class="chat-form" id="chat-form">
+            <textarea id="chat-input" rows="2" maxlength="2000" placeholder="问 Agent：帮我解释这段英文…"></textarea>
+            <button class="btn btn-primary" id="chat-send" type="submit">发送</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="studio-empty hidden" id="tab-empty">
+        <div>
+          <p class="eyebrow" id="tab-empty-eyebrow">COMING SOON</p>
+          <h2 id="tab-empty-title">播客暂未接入</h2>
+          <p id="tab-empty-text">当前先保留入口，后续可以接入播客频道与逐句字幕。</p>
+        </div>
+      </section>
     </div>
-  </header>
-
-  <main class="app video-page">
-    <section class="video-hero">
-      <p class="eyebrow">YouTube · Listen word by word</p>
-      <h1>搜一个英文视频，<br />让字幕跟着声音走。</h1>
-      <p class="lede">输入关键词，挑一个有字幕的视频。播放时左侧看画面，右侧对照英文与中文，当前单词会逐个亮起；点字幕可以跳转。</p>
-      <form class="video-search" id="video-search" role="search">
-        <label class="sr-only" for="video-q">搜索 YouTube 视频</label>
-        <span class="video-search-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
-        </span>
-        <input id="video-q" name="q" type="search" placeholder="IELTS listening, TED-Ed…" autocomplete="off" />
-        <button class="btn btn-primary" type="submit">搜索视频</button>
-      </form>
-      <div class="video-examples" id="video-examples"></div>
-    </section>
-
-    <section id="video-results" class="video-results" aria-live="polite">
-      <div class="video-skeleton-grid">
-        <div class="skeleton video-skeleton"></div>
-        <div class="skeleton video-skeleton"></div>
-        <div class="skeleton video-skeleton"></div>
-      </div>
-    </section>
-
-    <p class="video-foot-note">
-      视频与字幕来自 YouTube。搜索优先使用你配置的 Data API Key；没有 Key 时会尝试公开结果页。字幕由视频上传者或自动识别提供，并非每个视频都有。
-    </p>
-  </main>
-
-  <footer class="site-foot">
-    <div class="foot-left"><span class="foot-mark">EnOS</span><span>视频只是入口，逐词精听才是练习</span></div>
-    <div class="foot-right"><a href="/#/settings">配置 YouTube Key</a><span aria-hidden="true">·</span><span>EN · 中文</span></div>
-  </footer>
+  </div>
 
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
   <script type="module" src="/js/videos.js"></script>

@@ -13,29 +13,11 @@ export function mountAgent({ videoId, getState }) {
   const form = document.getElementById('agent-form');
   const input = document.getElementById('agent-input');
   const sendBtn = document.getElementById('agent-send');
-  const clearBtn = document.getElementById('agent-clear');
-  const statusEl = document.getElementById('agent-status');
-  const hintEl = document.getElementById('agent-hint');
-  const suggestionButtons = Array.from(document.querySelectorAll('#agent-suggestions button'));
 
   const history = [];
   let available = false;
   let busy = false;
   let lastAvailable = null;
-
-  function welcomeNode() {
-    if (!available) {
-      return el('div', { class: 'agent-welcome' },
-        el('strong', {}, '配置模型 Key 后开始对话'),
-        el('p', {}, 'Agent 可以解释当前句的语法、总结视频、挑出值得记的表达。'),
-        el('p', {}, el('a', { href: '/#/settings' }, '去设置页配置 API Key →'), ' 然后刷新这一页。'),
-      );
-    }
-    return el('div', { class: 'agent-welcome' },
-      el('strong', {}, '我会跟着视频上下文回答'),
-      el('p', {}, '播放到哪里，我就把当前句和附近字幕一起带进上下文。可以问语法、词汇、总结或雅思表达。'),
-    );
-  }
 
   function scroll() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -45,7 +27,6 @@ export function mountAgent({ videoId, getState }) {
     const bubble = el('div', {
       class: `agent-msg ${role}${options.pending ? ' pending' : ''}${options.error ? ' error' : ''}`,
     },
-    el('span', { class: 'agent-role' }, role === 'user' ? 'You' : 'EnOS Agent'),
     el('span', { class: 'agent-content' }, text));
     messagesEl.append(bubble);
     scroll();
@@ -54,17 +35,16 @@ export function mountAgent({ videoId, getState }) {
 
   function reset() {
     history.length = 0;
-    messagesEl.replaceChildren(welcomeNode());
-    scroll();
+    messagesEl.replaceChildren();
   }
 
   function setAvailability(value) {
     available = value;
     input.disabled = !value;
     sendBtn.disabled = !value;
-    suggestionButtons.forEach((button) => { button.disabled = !value; });
-    statusEl.textContent = value ? '结合当前句、字幕和播放位置回答' : '需要配置模型 Key 才能对话';
-    hintEl.textContent = value ? 'Enter 发送 · Shift + Enter 换行' : '配置 API Key 后可用 · 支持流式回答';
+    input.placeholder = value
+      ? '问 Agent：这句话为什么用这个时态？'
+      : '配置 API Key 后与 Agent 对话';
     if (lastAvailable !== value) {
       lastAvailable = value;
       reset();
@@ -78,9 +58,7 @@ export function mountAgent({ videoId, getState }) {
     let index = cues.findIndex((cue) => now >= cue.start && now < cue.end);
     if (index < 0) index = cues.findIndex((cue) => cue.start >= now);
     if (index < 0) index = Math.max(0, cues.length - 1);
-    const from = Math.max(0, index - 3);
-    const to = Math.min(cues.length, index + 7);
-    const nearby = cues.slice(from, to)
+    const nearby = cues.slice(Math.max(0, index - 3), Math.min(cues.length, index + 7))
       .map((cue) => `[${clock(cue.start)}] ${cue.en}${cue.zh ? ` / ${cue.zh}` : ''}`)
       .join('\n');
     const full = cues
@@ -105,15 +83,10 @@ export function mountAgent({ videoId, getState }) {
 
   async function send(text) {
     const question = String(text || '').trim();
-    if (!question || busy) return;
-    if (!available) {
-      addMessage('assistant', '还没有配置模型 Key。先在设置页填入 Key，然后刷新这一页。', { error: true });
-      return;
-    }
+    if (!question || busy || !available) return;
 
     busy = true;
     sendBtn.disabled = true;
-    sendBtn.textContent = '回答中…';
     input.value = '';
     addMessage('user', question);
     history.push({ role: 'user', content: question });
@@ -145,7 +118,6 @@ export function mountAgent({ videoId, getState }) {
     } finally {
       busy = false;
       sendBtn.disabled = false;
-      sendBtn.textContent = '发送';
       input.focus();
     }
   }
@@ -162,11 +134,7 @@ export function mountAgent({ videoId, getState }) {
   });
   input?.addEventListener('input', () => {
     input.style.height = 'auto';
-    input.style.height = `${Math.min(130, input.scrollHeight)}px`;
-  });
-  clearBtn?.addEventListener('click', reset);
-  suggestionButtons.forEach((button) => {
-    button.addEventListener('click', () => send(button.dataset.prompt));
+    input.style.height = `${Math.min(96, input.scrollHeight)}px`;
   });
 
   function el(tag, attrs = {}, ...children) {

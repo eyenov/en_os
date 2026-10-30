@@ -64,21 +64,7 @@ function wordsOf(cue) {
 
 function renderHead(data) {
   const title = data?.title || 'YouTube video';
-  const meta = [];
-  if (data?.channel) meta.push(h('span', {}, data.channel));
-  if (data?.duration) meta.push(h('span', {}, data.duration));
-  if (data?.viewCount) meta.push(h('span', {}, data.viewCount));
-  if (data?.hasCaptions) meta.push(h('span', { class: 'badge ok' }, '逐词字幕'));
-  if (data?.hasChinese) {
-    const zhLabel = data.zhSource === 'ai' ? 'AI 中文' : data.zhSource === 'google' ? '自动中文' : '官方中文';
-    meta.push(h('span', { class: 'badge accent' }, zhLabel));
-  }
-  if (data?.source) meta.push(h('span', { class: 'badge' }, data.source === 'youtube-po-token' ? 'PoToken' : 'YouTube'));
-  head.replaceChildren(
-    h('p', { class: 'eyebrow' }, data ? 'YouTube · Word by word' : 'YouTube · Loading'),
-    h('h1', {}, title),
-    meta.length ? h('div', { class: 'watch-meta' }, meta.flatMap((item, index) => (index ? [h('span', { class: 'faint' }, '·'), item] : [item]))) : null,
-  );
+  head.replaceChildren(h('h1', {}, title));
   document.title = `${title} · 逐词字幕 · EnOS`;
   if (data?.thumbnail) {
     const safeThumb = String(data.thumbnail).replace(/["\\\n\r]/g, '');
@@ -231,6 +217,7 @@ function scrollToCue(index) {
 }
 
 function updateNowLine(index) {
+  if (!nowLine || !nowEn || !nowZh) return;
   if (index >= 0 && cues[index]) {
     nowEn.textContent = cues[index].en;
     nowZh.textContent = cues[index].zh || '中文待生成';
@@ -286,6 +273,7 @@ function syncTime(time) {
 }
 
 function paintTime(seconds) {
+  if (!timeEl) return;
   const total = duration || captions?.durationSeconds || 0;
   timeEl.textContent = `${formatTimestamp(seconds)} / ${formatTimestamp(total)}`;
 }
@@ -306,8 +294,11 @@ function stopTicker() {
 }
 
 function markPlaying(playing) {
-  syncEl.classList.toggle('on', playing);
-  syncEl.querySelector('span').textContent = playing ? '字幕同步中' : '已暂停';
+  if (syncEl) {
+    syncEl.classList.toggle('on', playing);
+    const label = syncEl.querySelector('span');
+    if (label) label.textContent = playing ? '字幕同步中' : '已暂停';
+  }
   if (playing) startTicker();
   else {
     stopTicker();
@@ -400,7 +391,7 @@ function mountPlayer() {
             event.target.unloadModule?.('cc');
           } catch { /* native CC may not be loaded */ }
           paintTime(0);
-          syncEl.classList.remove('on');
+          syncEl?.classList.remove('on');
         },
         onStateChange: (event) => {
           if (event.data === 1) markPlaying(true);
@@ -426,6 +417,7 @@ async function loadCaptions() {
     captions = { ...data, zhSource: data.hasChinese ? 'official' : null };
     cues = normalizeCues(data.cues || []);
     renderHead(captions);
+    fitWatchViewport();
     if (!cues.length) {
       exportBtn.classList.add('hidden');
       showEmpty(data.reason);
@@ -558,6 +550,26 @@ function exportMarkdown() {
   toast('Markdown 已导出', 'ok', 2400);
 }
 
+function fitWatchViewport() {
+  const layout = document.querySelector('.watch-layout');
+  const agent = document.getElementById('agent-panel');
+  const subtitle = document.querySelector('.subtitle-panel');
+  if (!layout || !agent || !subtitle) return;
+  if (window.innerWidth <= 860) {
+    agent.style.height = '';
+    subtitle.style.height = '';
+    subtitle.style.maxHeight = '';
+    return;
+  }
+  const viewport = window.innerHeight;
+  const scrollY = window.scrollY || 0;
+  const layoutTop = layout.getBoundingClientRect().top + scrollY;
+  const agentTop = agent.getBoundingClientRect().top + scrollY;
+  agent.style.height = `${Math.max(280, Math.floor(viewport - agentTop))}px`;
+  subtitle.style.maxHeight = 'none';
+  subtitle.style.height = `${Math.max(420, Math.floor(viewport - layoutTop))}px`;
+}
+
 function initPlayerResize() {
   const layout = document.querySelector('.watch-layout');
   const handle = document.getElementById('player-resize');
@@ -576,6 +588,7 @@ function initPlayerResize() {
     if (save) {
       try { localStorage.setItem(KEY, String(ratio.toFixed(3))); } catch { /* private mode */ }
     }
+    requestAnimationFrame(fitWatchViewport);
   };
   apply(ratio, false);
 
@@ -646,6 +659,10 @@ function boot() {
     if (autoScroll && activeCue >= 0) scrollToCue(activeCue);
   });
   paintTime(0);
+  fitWatchViewport();
+  setTimeout(fitWatchViewport, 120);
+  document.fonts?.ready.then(() => fitWatchViewport()).catch(() => {});
+  window.addEventListener('resize', fitWatchViewport);
 }
 
 if (debug) {

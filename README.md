@@ -179,12 +179,15 @@ npm run smoke   # 真实浏览器端到端（需先 npm start，使用本机 Chr
 
 ## 视频精听
 
-顶部导航 **视频** → `/videos.html`。输入英文关键词搜索 YouTube，结果以缩略图卡片列出：
+顶部 **视频** → `/videos.html` 打开新的视频工作台：
 
-- 缩略图、时长、标题、频道、播放量 / 发布时间，以及网页检索能识别到的 **CC** 标记；
-- 点卡片进入 `/watch.html?v=<videoId>`：**播放器贴最左，字幕窗口铺满右侧**；每条字幕在同一行显示英文与中文，当前句也使用同一行对照，行高由较长的一侧决定；
+- 页面采用左右布局：最左是工具栏，只保留 **视频 / 对话** 两个入口；学习、听力、报告、设置等旧菜单暂时不放进这个工作台；
+- 主区域顶部是 **YouTube / 播客 / 图书** 三个紧凑标签；播客、图书先保留入口和占位页，暂不接入内容；
+- **视频**视图是「左侧频道导航树 + 右侧视频预览」：导航树可以整栏收起/展开，每个频道也可以展开视频子列表；右侧预览显示缩略图、标题、频道、描述、时长、播放量、发布时间和字幕标记；
+- 点预览卡片进入 `/watch.html?v=<videoId>`：**顶部只保留视频标题**；**播放器贴最左，字幕窗口铺满右侧**；每条字幕在同一行显示英文与中文，行高由较长的一侧决定；
+- **对话**视图是独立的大模型对话窗口，消息区内部滚动；未配置模型 Key 时会显示配置入口；
 - **播放器右侧有拖动把手**：左右拖动调整播放器与字幕的宽度比例，视频保持 16:9；比例存在 localStorage，双击把手或按 Home 重置；窄屏自动隐藏；
-- **播放器下方是视频 Agent 对话窗口**，会把当前播放句与完整字幕（超长视频截断）带进上下文；
+- **播放器下方是视频 Agent 对话窗口**：高度按首屏计算、底边贴屏幕底部，消息区内部滚动，输入框固定在窗口底部；不再显示时间栏、当前句、使用说明等额外内容；
 - 字幕跟随播放位置滚动，英文 **逐词高亮**，中文按句内进度逐字高亮；
 - 点任意一句跳到对应时间，点单词跳到该词；可关闭自动滚动；
 - 官方中文字幕优先；没有官方中文时**自动翻译**：配置了模型 Key 用当前 chat 模型，未配置则走免 Key 的 Google Translate 兜底；
@@ -219,7 +222,9 @@ npm start
 
 2026 年起 YouTube 对字幕请求要求 **PoToken**，没有 token 会返回空 `200`。因此当直接读到的内容是空的，服务端会再调用 `get-youtube-transcript` 生成视频绑定的 PoToken，然后携带 `&pot=...&c=WEB` 重新请求；这一步失败时会显示可操作的错误，而不是静默空白。
 
-![视频搜索](docs/screenshots/video-search.png)
+![视频工作台：频道树 + 视频预览](docs/screenshots/video-search.png)
+
+![对话视图](docs/screenshots/video-chat.png)
 
 ![播放器、双语字幕与视频 Agent](docs/screenshots/video-watch.png)
 
@@ -410,9 +415,10 @@ en_os/
 ├─ public/
 │  ├─ index.html        # 学习 SPA
 │  ├─ report.html       # 独立报告页
-│  ├─ videos.html       # YouTube 搜索页
+│  ├─ videos.html       # 视频工作台：工具栏 + 频道树 + 视频预览 + 对话
 │  ├─ watch.html        # 播放 + 双语逐词字幕页
 │  ├─ css/app.css
+│  ├─ css/studio.css    # 视频工作台布局（rail / tabs / tree / previews / chat）
 │  └─ js/
 │     ├─ engine.js      # 解析、8 步生成、评分判定、报告汇总、AI 提示词
 │     ├─ scoring.js     # 文本相似度、跟读比对、写作 rubric
@@ -423,7 +429,7 @@ en_os/
 │     ├─ subtitle-sync.js # 字幕查找、词级进度、中文逐字高亮（纯函数）
 │     ├─ tasks.js       # 8 种任务渲染器（views/tasks.js）
 │     ├─ session.js     # 学习状态机、计时、语音助手
-│     ├─ videos.js / watch.js # 视频搜索与播放页
+│     ├─ videos.js / watch.js # 视频工作台与播放页
 │     ├─ watch-agent.js # 播放器下方的视频 Agent（流式对话、字幕上下文）
 │     ├─ home.js / settings.js / reports.js / listening.js
 │     ├─ report.js      # 报告页渲染、雷达图、导出
