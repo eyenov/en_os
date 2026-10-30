@@ -416,3 +416,17 @@ YouTube 的机器人验证是**瞬时**的：同一个视频可能第一次 `LOG
 - 右侧顶部自定义播放器：播放/暂停、时间、可点击/拖动的 Web Audio AnalyserNode 动态曲线；音频元素隐藏，MediaElementSource → Analyser → destination；
 - 下方 English / 中文两列独立滚动，使用与视频页相同的 `normalizeCues / findCueIndex / findWordIndex / activeCharCount`，按音频 `currentTime` 做词级/逐字高亮；
 - 点击字幕 seek 音频；中文复用视频翻译接口；长单集按 200 句分块并显示进度。
+
+---
+
+## 18. 图书管线
+
+图书来自公开仓库 **hehonghui/awesome-english-ebooks**，只做目录索引和按需读取，不把杂志文件复制进本项目。
+
+- `server/books.mjs` 请求一次 GitHub Git Trees API，按 `01_economist / 02_new_yorker / 04_atlantic / 05_wired` 归并日期目录与 `epub / pdf / mobi` 文件；目录缓存 30 分钟；
+- `GET /api/books` 返回 4 个杂志频道和 106 期；
+- `GET /api/books/read?category=&date=` 下载 EPUB，在内存中解析 ZIP central directory（stored/deflate）、`META-INF/container.xml`、OPF manifest/spine、NCX/nav 目录；
+- XHTML 章节不直接回传，而是提取标题、段落、引用和列表为 `{type,text}` block；过滤广告、封面、目录页和 zlibrary 下载尾巴，避免脚本注入；
+- `GET /api/books/file?category=&date=&format=` 通过服务端代理下载原始文件，带 `Content-Disposition`；
+- 前端左侧杂志树过滤，右侧书卡；点卡片进入内嵌阅读器：左侧章节目录、右侧正文、上一章/下一章、顶部下载与 GitHub 源；
+- 解析后的书缓存在内存中（最多 3 本），大 EPUB 在首次打开时可能需要 30–60 秒。

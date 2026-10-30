@@ -248,6 +248,22 @@ export async function getPodcastEpisode(channel, episode) {
   return response.json();
 }
 
+export async function getBooks() {
+  const response = await fetch('/api/books', { headers: { Accept: 'application/json' } });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}
+
+export async function readBook(category, date) {
+  const response = await fetch(`/api/books/read?category=${encodeURIComponent(category)}&date=${encodeURIComponent(date)}`, { headers: { Accept: 'application/json' } });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}
+
+export function bookFileUrl(category, date, format) {
+  return `/api/books/file?category=${encodeURIComponent(category)}&date=${encodeURIComponent(date)}&format=${encodeURIComponent(format)}`;
+}
+
 export async function testConnection(settings = getSettings()) {
   const started = performance.now();
   const data = await chat({

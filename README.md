@@ -182,9 +182,10 @@ npm run smoke   # 真实浏览器端到端（需先 npm start，使用本机 Chr
 顶部 **视频** → `/videos.html` 打开新的视频工作台：
 
 - 页面采用左右布局：最左是工具栏，只保留 **视频 / 对话** 两个入口；学习、听力、报告、设置等旧菜单暂时不放进这个工作台；
-- 主区域顶部是 **YouTube / 播客 / 图书** 三个紧凑标签；播客已接入两个带 VTT 字幕的频道，图书先保留入口和占位页；
+- 主区域顶部是 **YouTube / 播客 / 图书** 三个紧凑标签；播客已接入两个带 VTT 字幕的频道，图书已从 GitHub 外刊仓库导入 4 本杂志的 106 期；
 - **视频**视图是「左侧频道导航树 + 右侧视频预览」：导航树可以整栏收起/展开，每个频道也可以展开视频子列表；右侧预览显示缩略图、标题、频道、描述、时长、播放量、发布时间和字幕标记；
-- **播客**视图是「左侧频道/单集树 + 顶部音频播放器 + 下方左右对照同步字幕」；
+- **播客**视图是「左侧频道/单集树 + 顶部动态音频播放器 + 下方左右对照同步字幕」；
+- **图书**视图是「左侧杂志树 + 右侧期刊卡片」；点卡片进入内嵌阅读器，左侧章节目录、右侧正文，可切换章节，也可下载 EPUB / PDF / MOBI；
 - 点视频预览**不再跳转旧播放页**，而是在右侧内容区打开视频详情：左上视频（中间拖动分割线调整宽度，保持 16:9）、下面 Agent 对话、右侧 English / 中文两列同步字幕；「← 视频列表」返回预览；
 - **对话**视图是独立的大模型对话窗口，消息区内部滚动；未配置模型 Key 时会显示配置入口；
 - 视频详情中间有拖动分割线：左右拖动调整播放器/字幕宽度比例，比例存在 localStorage，双击重置；
@@ -246,6 +247,28 @@ npm start
 - 封面来自 `podnews.net` / `storage.buzzsprout.com`，CSP 已放行；浏览器需要能访问封面域，音频本身由服务端代理。
 
 ![播客精听：顶部音频 + 左右同步字幕](docs/screenshots/podcast-watch.png)
+
+### 图书
+
+图书标签从 **hehonghui/awesome-english-ebooks** 导入，当前目录包含：
+
+- **The Economist** — 44 期，EPUB / MOBI
+- **The New Yorker** — 43 期，EPUB / PDF / MOBI
+- **The Atlantic** — 9 期，EPUB / PDF
+- **Wired** — 10 期，EPUB
+
+实现方式：
+
+- `server/books.mjs` 只请求一次 GitHub Git Trees API，按 `杂志/日期/文件` 归并成 106 本书；目录缓存 30 分钟；
+- 左侧杂志树过滤期刊，右侧卡片显示杂志、日期、格式和大小；
+- 点卡片进入内嵌阅读器：服务端按需下载 EPUB，解析 ZIP、`container.xml`、OPF、NCX 目录和 spine 章节，提取标题/正文段落；正文以纯文本 block 返回，避免把外部 HTML/脚本直接注入页面；
+- 阅读器左侧章节目录，右侧正文，支持上一章/下一章；顶部可直接下载 EPUB / PDF / MOBI 或打开 GitHub 源；首次打开大 EPUB（例如 30MB+）可能需要 30–60 秒，之后走内存缓存；
+- 下载和解析都通过服务端代理，浏览器只访问同源 `/api/books/*`；
+- 内容版权归原出版方，本项目只做索引导航和按需读取，不把杂志文件打包进仓库。
+
+![图书库：左侧杂志树 + 右侧 106 期](docs/screenshots/books-library.png)
+
+![图书阅读器：左侧章节目录，右侧正文](docs/screenshots/books-reader.png)
 
 **边界**：不是每个视频都有字幕或允许嵌入；没有字幕时仍可播放，但不会高亮。字幕读取依赖本机 Node 能访问 YouTube；网络受限时播放器仍可能由浏览器直接加载，但服务端拿不到字幕。嵌入播放器由 YouTube 提供，浏览器会直接连接 Google；本机代理只读取公开视频页与字幕轨。
 
@@ -431,7 +454,8 @@ en_os/
 │  ├─ search.mjs        # 三家原生搜索 + 维基/DDG 兜底 + 原文截取调度
 │  ├─ extract.mjs       # 网页正文抽取、句子边界截取、英文判定、抓取安全限制
 │  ├─ youtube.mjs       # YouTube 搜索、captions/timedtext、PoToken 回退、逐词时间轴、模型/免费翻译
-│  └─ podcasts.mjs      # 播客 RSS、podcast:transcript VTT、音频/单集/词级 cue
+│  ├─ podcasts.mjs      # 播客 RSS、podcast:transcript VTT、音频/单集/词级 cue
+│  └─ books.mjs         # GitHub 外刊目录、EPUB ZIP/OPF/NCX、章节正文
 ├─ public/
 │  ├─ index.html        # 学习 SPA
 │  ├─ report.html       # 独立报告页
@@ -456,7 +480,7 @@ en_os/
 │     ├─ api.js / store.js / speech.js / ui.js / art.js
 │     └─ app.js         # hash 路由
 ├─ data/core100.json    # 100 个雅思核心词句
-├─ tests/               # node:test（69 个测试）
+├─ tests/               # node:test（70 个测试）
 ├─ scripts/             # 校验、CDP 端到端（学习 / 视频）、mock provider
 └─ docs/
 ```
@@ -534,7 +558,7 @@ en_os/
 npm test
 ```
 
-- **69 个测试**：数据完整性、分析、8 步 payload 合法性、阈值判定、报告汇总、AI 覆盖校验、提示词、跟读比对、写作评分、语音指令、模块顺序、网页正文抽取与句子边界截取、听力对话校验 / 成分对齐 / 真实短句 / 本地模板 / 结果文本 / 语音分块偏移、逐词语音队列、语音边界偏移、鼠标取词（分词 / 词形还原 / 本课词表）、YouTube 搜索解析（videoRenderer / lockupViewModel）、timedtext 词级时间轴、PoToken 段落转词级、字幕合并与中英对齐、瞬时登录重试与失败不缓存、免费翻译编号回填、播客 VTT 时间轴与词级分配、服务端 chat / 流式 / 搜索 / 原文抓取 / 单词释义 / 视频路由 / 安全。
+- **70 个测试**：数据完整性、分析、8 步 payload 合法性、阈值判定、报告汇总、AI 覆盖校验、提示词、跟读比对、写作评分、语音指令、模块顺序、网页正文抽取与句子边界截取、听力对话校验 / 成分对齐 / 真实短句 / 本地模板 / 结果文本 / 语音分块偏移、逐词语音队列、语音边界偏移、鼠标取词（分词 / 词形还原 / 本课词表）、YouTube 搜索解析（videoRenderer / lockupViewModel）、timedtext 词级时间轴、PoToken 段落转词级、字幕合并与中英对齐、瞬时登录重试与失败不缓存、免费翻译编号回填、播客 VTT 时间轴与词级分配、GitHub 图书目录归并、服务端 chat / 流式 / 搜索 / 原文抓取 / 单词释义 / 视频路由 / 安全。
 - 服务端测试会自建 mock provider 与本地文章页，不依赖外网。
 
 真实浏览器端到端：

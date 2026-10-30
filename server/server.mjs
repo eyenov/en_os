@@ -19,6 +19,7 @@ import { searchWeb } from './search.mjs';
 import { extractFromUrl } from './extract.mjs';
 import { getVideoCaptions, searchYouTube, translateCues, translateCuesFree } from './youtube.mjs';
 import { getPodcastEpisode, listPodcastChannels, listPodcastEpisodes, openPodcastAudio } from './podcasts.mjs';
+import { listBooks, openBookFile, readBook } from './books.mjs';
 
 const ROOT = path.dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -388,6 +389,44 @@ const server = http.createServer(async (req, res) => {
         if (!allowed.includes(origin)) throw new HttpError(403, '跨站请求被拒绝。', 'BAD_ORIGIN');
       }
       if (rateLimited(ip)) throw new HttpError(429, '请求太频繁，请稍后再试。', 'RATE_LIMIT');
+      if (urlPath === '/api/books') {
+        if (req.method !== 'GET') throw new HttpError(405, '该接口只接受 GET。', 'METHOD_NOT_ALLOWED');
+        const data = await listBooks();
+        sendJSON(res, 200, data);
+        console.log(`[api] books ${res.statusCode} ${data.books.length} ${Date.now() - started}ms`);
+        return;
+      }
+      if (urlPath === '/api/books/read') {
+        if (req.method !== 'GET') throw new HttpError(405, '该接口只接受 GET。', 'METHOD_NOT_ALLOWED');
+        const data = await readBook(
+          String(url.searchParams.get('category') || ''),
+          String(url.searchParams.get('date') || ''),
+        );
+        sendJSON(res, 200, data);
+        console.log(`[api] book-read ${res.statusCode} ${data.chapters.length} chapters ${Date.now() - started}ms`);
+        return;
+      }
+      if (urlPath === '/api/books/file') {
+        if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, '该接口只接受 GET。', 'METHOD_NOT_ALLOWED');
+        const { response, filename, contentType } = await openBookFile(
+          String(url.searchParams.get('category') || ''),
+          String(url.searchParams.get('date') || ''),
+          String(url.searchParams.get('format') || ''),
+        );
+        const headers = {
+          ...SECURITY_HEADERS,
+          'Content-Type': contentType,
+          'Content-Disposition': `attachment; filename="${filename}"`,
+          'Cache-Control': 'public, max-age=3600',
+        };
+        const length = response.headers.get('content-length');
+        if (length) headers['Content-Length'] = length;
+        res.writeHead(200, headers);
+        if (req.method === 'HEAD' || !response.body) return res.end();
+        Readable.fromWeb(response.body).pipe(res);
+        console.log(`[api] book-file ${res.statusCode} ${filename} ${Date.now() - started}ms`);
+        return;
+      }
       if (urlPath === '/api/podcasts/audio') {
         if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, '该接口只接受 GET。', 'METHOD_NOT_ALLOWED');
         const { response } = await openPodcastAudio(

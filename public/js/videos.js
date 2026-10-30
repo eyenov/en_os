@@ -1,11 +1,14 @@
 import {
   aiReady,
+  bookFileUrl,
   chatStream,
   fetchVideoCaptions,
+  getBooks,
   getHealth,
   getPodcastChannels,
   getPodcastEpisode,
   getPodcastEpisodes,
+  readBook,
   searchVideos,
   translateVideoCaptions,
   translateVideoCaptionsFree,
@@ -134,6 +137,32 @@ const detail = {
   chat: [],
   chatAvailable: false,
   chatBusy: false,
+};
+
+const booksPane = document.getElementById('books-pane');
+const booksGrid = document.getElementById('books-grid');
+const booksSubtitle = document.getElementById('books-subtitle');
+const bookReader = document.getElementById('book-reader');
+const bookTitle = document.getElementById('book-title');
+const bookMeta = document.getElementById('book-meta');
+const bookActions = document.getElementById('book-actions');
+const bookToc = document.getElementById('book-toc');
+const bookContent = document.getElementById('book-content');
+const bookBack = document.getElementById('book-back');
+const bookState = {
+  initialized: false,
+  loading: false,
+  data: null,
+  books: [],
+  channels: [],
+  selectedCategory: 'all',
+  readerOpen: false,
+  item: null,
+  chapters: [],
+  active: 0,
+  requestSeq: 0,
+  loadingBook: false,
+  error: '',
 };
 
 function setQueryInUrl(query) {
@@ -1435,6 +1464,7 @@ function exportDetailMarkdown() {
 }
 
 detailBack.addEventListener('click', () => closeVideoDetail());
+bookBack.addEventListener('click', () => closeBookReader());
 detailTranslate.addEventListener('click', translateDetail);
 detailExport.addEventListener('click', exportDetailMarkdown);
 detailChatForm.addEventListener('submit', (event) => {
@@ -1511,6 +1541,245 @@ async function runSearch(rawQuery, { updateUrl = true } = {}) {
   }
 }
 
+function bookInitials(book) {
+  const words = String(book.short || book.magazine || 'BOOKS').split(/\s+/).filter((word) => word && !/^THE$/i.test(word));
+  return words.slice(0, 2).map((word) => word[0]).join('').toUpperCase() || 'BK';
+}
+
+function renderBooksTree() {
+  if (state.tab !== 'books' || state.view !== 'videos') return;
+  channelList.replaceChildren();
+  const total = bookState.books.length;
+  treeCount.textContent = total ? `${bookState.channels.length} 本外刊 · ${total} 期` : '正在读取目录';
+
+  channelList.append(h('div', { class: 'tree-node' },
+    h('div', { class: 'tree-row' },
+      h('button', {
+        class: `tree-main${bookState.selectedCategory === 'all' ? ' active' : ''}`,
+        type: 'button',
+        onclick: () => selectBookCategory('all'),
+      },
+      h('span', { class: 'tree-avatar' }, '全'),
+      h('span', { class: 'tree-name' }, '全部外刊'),
+      h('span', { class: 'tree-count' }, String(total))),
+    ),
+  ));
+
+  for (const channel of bookState.channels) {
+    channelList.append(h('div', { class: 'tree-node' },
+      h('div', { class: 'tree-row' },
+        h('button', {
+          class: `tree-main${bookState.selectedCategory === channel.id ? ' active' : ''}`,
+          type: 'button',
+          onclick: () => selectBookCategory(channel.id),
+        },
+        h('span', { class: 'tree-avatar', style: `background:${channel.accent};color:#fff` }, bookInitials(channel)),
+        h('span', { class: 'tree-name' }, channel.name),
+        h('span', { class: 'tree-count' }, String(channel.count || 0))),
+      ),
+    ));
+  }
+}
+
+function selectBookCategory(id) {
+  bookState.selectedCategory = id;
+  if (bookState.readerOpen) closeBookReader({ restore: false });
+  renderTabState();
+}
+
+function renderBooksGrid() {
+  if (state.tab !== 'books' && !bookState.readerOpen) return;
+  const all = bookState.books;
+  const items = bookState.selectedCategory === 'all'
+    ? all
+    : all.filter((book) => book.category === bookState.selectedCategory);
+  const label = bookState.selectedCategory === 'all'
+    ? '全部外刊'
+    : bookState.channels.find((channel) => channel.id === bookState.selectedCategory)?.name || '外刊';
+  booksSubtitle.textContent = bookState.loading
+    ? '正在读取 GitHub 图书目录…'
+    : bookState.error
+      ? bookState.error
+      : `${label} · ${items.length} 期 · 按最新日期排序`;
+  booksGrid.replaceChildren();
+  if (bookState.loading && !all.length) {
+    booksGrid.append(h('div', { class: 'books-empty' }, '正在读取 GitHub 目录…'));
+    return;
+  }
+  if (bookState.error && !all.length) {
+    booksGrid.append(h('div', { class: 'books-empty' }, bookState.error));
+    return;
+  }
+  if (!items.length) {
+    booksGrid.append(h('div', { class: 'books-empty' }, '这个分类下暂时没有可读的书。'));
+    return;
+  }
+  for (const book of items) {
+    const cover = h('div', {
+      class: 'book-cover',
+      style: `background:linear-gradient(145deg, ${book.accent} 0%, #171411 135%)`,
+    },
+    h('span', { class: 'book-mag' }, book.short),
+    h('span', { class: 'book-initial' }, bookInitials(book)),
+    h('span', { class: 'book-date' }, book.date));
+    const formats = book.formats.map((format) => h('span', { class: `book-format ${format.format}` }, `${format.format.toUpperCase()}${format.sizeLabel ? ` · ${format.sizeLabel}` : ''}`));
+    booksGrid.append(h('button', {
+      class: 'book-card',
+      type: 'button',
+      title: book.title,
+      onclick: () => openBook(book),
+    },
+    cover,
+    h('div', { class: 'book-card-body' },
+      h('h2', {}, book.title),
+      h('p', { class: 'book-sub' }, `${book.magazine} · ${book.formats.length} 种格式`),
+      h('div', { class: 'book-formats' }, formats),
+      h('span', { class: 'book-read' }, book.readable ? '阅读 EPUB →' : '下载 →'),
+    )));
+  }
+}
+
+async function ensureBooks() {
+  if (bookState.initialized) return;
+  if (bookState.loading) return;
+  bookState.loading = true;
+  bookState.error = '';
+  renderBooksGrid();
+  try {
+    const data = await getBooks();
+    bookState.data = data;
+    bookState.books = Array.isArray(data.books) ? data.books : [];
+    bookState.channels = Array.isArray(data.channels) ? data.channels : [];
+    bookState.initialized = true;
+    bookState.error = '';
+  } catch (error) {
+    bookState.error = error.message || '图书目录加载失败';
+    toast(bookState.error, 'err', 4200);
+  } finally {
+    bookState.loading = false;
+    if (state.tab === 'books') {
+      renderBooksTree();
+      renderBooksGrid();
+    }
+  }
+}
+
+function bookDownloadLink(book, format) {
+  return h('a', {
+    href: bookFileUrl(book.category, book.date, format.format),
+    download: `${book.magazine.replace(/[^\w.-]+/g, '_')}_${book.date}.${format.format}`,
+    title: `下载 ${format.format.toUpperCase()}${format.sizeLabel ? ` · ${format.sizeLabel}` : ''}`,
+  }, format.format.toUpperCase());
+}
+
+function renderBookActions(book) {
+  bookActions.replaceChildren(
+    ...book.formats.map((format) => bookDownloadLink(book, format)),
+    h('a', { href: book.sourceUrl, target: '_blank', rel: 'noopener noreferrer' }, 'GitHub ↗'),
+  );
+}
+
+function renderBookToc() {
+  bookToc.replaceChildren();
+  bookState.chapters.forEach((chapter, index) => {
+    bookToc.append(h('button', {
+      class: `book-toc-item${index === bookState.active ? ' active' : ''}`,
+      type: 'button',
+      onclick: () => showBookChapter(index),
+    },
+    chapter.title,
+    h('small', {}, `${chapter.wordCount.toLocaleString()} words`)));
+  });
+}
+
+function showBookChapter(index) {
+  if (!bookState.chapters.length) return;
+  const next = Math.min(bookState.chapters.length - 1, Math.max(0, index));
+  bookState.active = next;
+  const chapter = bookState.chapters[next];
+  const article = h('div', { class: 'book-article' },
+    h('p', { class: 'book-chapter-kicker' }, `CHAPTER ${next + 1} / ${bookState.chapters.length} · ${bookState.item?.magazine || ''}`),
+    h('h1', { class: 'book-chapter-title' }, chapter.title),
+    ...chapter.blocks.map((block) => {
+      if (block.type === 'heading') return h('h2', { class: 'book-block heading' }, block.text);
+      if (block.type === 'bullet') return h('p', { class: 'book-block bullet' }, block.text);
+      return h('p', { class: 'book-block' }, block.text);
+    }),
+    h('div', { class: 'book-chapter-nav' },
+      h('button', {
+        type: 'button',
+        disabled: next === 0,
+        onclick: () => showBookChapter(next - 1),
+      }, '← 上一章'),
+      h('button', {
+        type: 'button',
+        disabled: next === bookState.chapters.length - 1,
+        onclick: () => showBookChapter(next + 1),
+      }, '下一章 →'),
+    ),
+  );
+  bookContent.replaceChildren(article);
+  bookContent.scrollTop = 0;
+  renderBookToc();
+  requestAnimationFrame(() => {
+    bookToc.querySelector('.book-toc-item.active')?.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+async function openBook(book) {
+  if (!book.readable) {
+    window.location.href = bookFileUrl(book.category, book.date, book.primaryFormat);
+    return;
+  }
+  bookState.readerOpen = true;
+  bookState.item = book;
+  bookState.chapters = [];
+  bookState.active = 0;
+  bookState.loadingBook = true;
+  bookState.requestSeq += 1;
+  const request = bookState.requestSeq;
+  bookTitle.textContent = book.title;
+  bookMeta.textContent = `${book.magazine} · ${book.date} · 正在下载 EPUB${book.epub?.sizeLabel ? ` (${book.epub.sizeLabel})` : ''}…`;
+  renderBookActions(book);
+  bookToc.replaceChildren(h('div', { class: 'books-empty' }, '读取目录…'));
+  bookContent.replaceChildren(h('div', { class: 'book-loading' },
+    h('strong', {}, '正在打开这本外刊'),
+    h('p', {}, '首次阅读会从 GitHub 下载 EPUB 并解析章节；大文件可能需要 30–60 秒，之后会使用缓存。'),
+  ));
+  renderTabState();
+  try {
+    const data = await readBook(book.category, book.date);
+    if (request !== bookState.requestSeq) return;
+    const parsed = data.book || {};
+    bookState.chapters = Array.isArray(data.chapters) ? data.chapters : [];
+    bookState.active = 0;
+    bookTitle.textContent = parsed.title || book.title;
+    bookMeta.textContent = `${parsed.magazine || book.magazine} · ${parsed.date || book.date} · ${bookState.chapters.length} 章 · ${(parsed.wordCount || 0).toLocaleString()} words`;
+    renderBookActions(book);
+    if (!bookState.chapters.length) throw new Error('这本书没有可阅读章节');
+    showBookChapter(0);
+  } catch (error) {
+    if (request !== bookState.requestSeq) return;
+    bookMeta.textContent = `${book.magazine} · ${book.date}`;
+    bookToc.replaceChildren();
+    bookContent.replaceChildren(h('div', { class: 'book-error' },
+      h('strong', {}, '这本外刊暂时打不开'),
+      h('p', {}, error.message || 'EPUB 解析失败，可以先下载到本地阅读。'),
+    ));
+  } finally {
+    if (request === bookState.requestSeq) bookState.loadingBook = false;
+  }
+}
+
+function closeBookReader({ restore = true } = {}) {
+  bookState.readerOpen = false;
+  bookState.requestSeq += 1;
+  bookState.item = null;
+  bookState.chapters = [];
+  bookState.active = 0;
+  if (restore) renderTabState();
+}
+
 function setTreeCollapsed(value) {
   state.treeCollapsed = Boolean(value);
   workspace.classList.toggle('tree-collapsed', state.treeCollapsed);
@@ -1519,36 +1788,37 @@ function setTreeCollapsed(value) {
 }
 
 function updateTreeOpen() {
-  const mediaTab = state.tab === 'youtube' || state.tab === 'podcast';
+  const mediaTab = state.tab === 'youtube' || state.tab === 'podcast' || state.tab === 'books';
   treeOpen.classList.toggle('hidden', !(state.treeCollapsed && state.view === 'videos' && mediaTab));
-}
-
-function renderTabEmpty() {
-  document.getElementById('tab-empty-eyebrow').textContent = 'COMING SOON';
-  document.getElementById('tab-empty-title').textContent = '图书暂未接入';
-  document.getElementById('tab-empty-text').textContent = '入口先保留在这里，后续可以接入英文图书与章节精读。';
 }
 
 function renderTabState() {
   const youtube = state.tab === 'youtube';
   const podcastTab = state.tab === 'podcast';
-  const showMedia = state.view === 'videos' && (youtube || podcastTab);
-  const showEmpty = state.view === 'videos' && !youtube && !podcastTab;
+  const booksTab = state.tab === 'books';
+  const showMedia = state.view === 'videos' && (youtube || podcastTab || booksTab);
   const showDetail = showMedia && youtube && state.detailOpen;
+  const showBookReader = showMedia && booksTab && bookState.readerOpen;
   mediaView.classList.toggle('hidden', !showMedia);
   youtubePane.classList.toggle('hidden', !(showMedia && youtube && !showDetail));
   videoDetail.classList.toggle('hidden', !showDetail);
   podcastPane.classList.toggle('hidden', !(showMedia && podcastTab));
-  tabEmpty.classList.toggle('hidden', !showEmpty);
-  if (showEmpty) renderTabEmpty();
+  booksPane.classList.toggle('hidden', !(showMedia && booksTab && !showBookReader));
+  bookReader.classList.toggle('hidden', !showBookReader);
+  tabEmpty.classList.add('hidden');
   if (showMedia) {
-    treeEyebrow.textContent = youtube ? 'CHANNELS' : 'PODCAST CHANNELS';
-    treeTitle.textContent = youtube ? '频道' : '播客频道';
+    treeEyebrow.textContent = youtube ? 'CHANNELS' : booksTab ? 'LIBRARY' : 'PODCAST CHANNELS';
+    treeTitle.textContent = youtube ? '频道' : booksTab ? '外刊' : '播客频道';
     if (youtube) renderChannels();
+    else if (booksTab) renderBooksTree();
     else renderPodcastTree();
   }
   updateTreeOpen();
   if (podcastTab) ensurePodcast();
+  if (booksTab) {
+    if (!bookState.readerOpen) renderBooksGrid();
+    ensureBooks();
+  }
 }
 
 function setView(view) {
@@ -1563,6 +1833,7 @@ function setView(view) {
     tabEmpty.classList.add('hidden');
     podcastAudio.pause();
     if (state.detailOpen) closeVideoDetail({ restore: false });
+    if (bookState.readerOpen) closeBookReader({ restore: false });
     ensureChat();
     updateTreeOpen();
     return;
@@ -1573,6 +1844,7 @@ function setView(view) {
 function setTab(tab) {
   if (state.tab === 'podcast' && tab !== 'podcast') podcastAudio.pause();
   if (state.tab === 'youtube' && tab !== 'youtube' && state.detailOpen) closeVideoDetail({ restore: false });
+  if (state.tab === 'books' && tab !== 'books' && bookState.readerOpen) closeBookReader({ restore: false });
   state.tab = tab;
   for (const button of document.querySelectorAll('.studio-tab')) {
     const active = button.dataset.tab === tab;

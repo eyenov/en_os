@@ -166,6 +166,36 @@
             </div>
           </div>
         </section>
+
+        <section class="books-pane hidden" id="books-pane">
+          <div class="books-head">
+            <div>
+              <p class="eyebrow">LIBRARY</p>
+              <h1>英语外刊</h1>
+              <p id="books-subtitle">正在读取 GitHub 图书目录…</p>
+            </div>
+            <a class="books-source" href="https://github.com/hehonghui/awesome-english-ebooks" target="_blank" rel="noopener noreferrer">GitHub 源 ↗</a>
+          </div>
+          <div class="books-grid" id="books-grid" aria-live="polite"></div>
+        </section>
+
+        <section class="book-reader hidden" id="book-reader">
+          <div class="book-reader-head">
+            <button class="detail-back" id="book-back" type="button">← 图书列表</button>
+            <div class="book-reader-title">
+              <h1 id="book-title">图书</h1>
+              <p id="book-meta"></p>
+            </div>
+            <div class="book-actions" id="book-actions"></div>
+          </div>
+          <div class="book-reader-body">
+            <aside class="book-toc-panel">
+              <p class="book-toc-title">目录</p>
+              <div class="book-toc-scroll" id="book-toc"></div>
+            </aside>
+            <article class="book-content" id="book-content" aria-live="polite"></article>
+          </div>
+        </section>
       </section>
 
       <section class="chat-view hidden" id="chat-view">
