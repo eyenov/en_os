@@ -336,6 +336,8 @@ native ──fail──▶ Wikipedia ──fail──▶ DuckDuckGo
 
 2026 年起 YouTube 对 `timedtext` 强制 PoToken：没有 token 时返回空 `200`。因此直接解析为空时会调用可选依赖 `get-youtube-transcript`，由 BotGuard 铸造视频绑定的 token，再以 `&pot=...&c=WEB` 重新请求。该工具返回句级 segment，`segmentsToCues()` 再按词长把每句时间分给单词；没有安装依赖或 token 铸造失败时显示明确原因，而不是空白字幕。
 
+YouTube 的机器人验证是**瞬时**的：同一个视频可能第一次 `LOGIN_REQUIRED`，几秒后正常。因此 watch 页会换两种 URL 重试，PoToken 助手也会重试一次；`LOGIN_REQUIRED` / `CAPTION_FETCH_FAILED` / `NO_CAPTIONS` **都不写入缓存**，只有成功结果才缓存，避免一次误判把字幕锁死十分钟。
+
 ### 15.3 播放同步
 
 - 不使用定时器估算播放位置，而是轮询 `player.getCurrentTime()`；
@@ -345,11 +347,12 @@ native ──fail──▶ Wikipedia ──fail──▶ DuckDuckGo
 
 ### 15.4 翻译
 
-优先使用 YouTube 官方 `tlang=zh-Hans`（零成本、时间对齐好）。为空时：
+优先使用 YouTube 官方 `tlang=zh-Hans`（零成本、时间对齐好）。为空时自动翻译：
 
-- 前端按 200 句分块调用 `/api/youtube/translate`；
-- 服务端用当前 chat 服务商，每 25 句一批，要求返回等长 JSON 数组；
-- 校验条数，不符就报错让用户重试；结果缓存 30 分钟，避免重复计费。
+- 配置了模型 Key：前端按 200 句分块调用 `/api/youtube/translate`；服务端用当前 chat 服务商，每 25 句一批，要求返回等长 JSON 数组；
+- 没有模型 Key（或模型调用失败）：调用 `/api/youtube/translate-free`，服务端用 Google Translate 公开接口，每 20 句一批，并在每行前加 `[[n]]` 编号，回填到对应 cue；不需要 Key；
+- 校验条数，不符就报错让用户重试；模型结果与免费结果都缓存 30 分钟，避免重复计费/请求；
+- 字幕页加载后自动触发，不要求用户先点按钮；失败时显示「重试翻译」。
 
 ### 15.5 安全与降级
 
@@ -359,8 +362,18 @@ native ──fail──▶ Wikipedia ──fail──▶ DuckDuckGo
 - 服务端拿不到字幕时，浏览器仍可直接播放 iframe，只是没有高亮；
 - 需要代理时由 `server/start.mjs` 把 `YOUTUBE_PROXY` / `HTTPS_PROXY` 转为 Node 24 的 `NODE_USE_ENV_PROXY=1`，让服务端搜索、BotGuard、字幕请求走同一出口；浏览器自身的 iframe 与缩略图仍由浏览器代理设置决定。
 
-### 15.6 测试
+### 15.6 页面结构与 Agent
 
-- `tests/youtube.test.mjs` 覆盖两种搜索结果结构、JSON3 词级时间、无 offset 的均分、合并、官方中文对齐；
+- 视频页取消通用 1180px 居中容器，左右只保留 12–26px 安全边距，所以播放器贴左、字幕窗口铺到最右；
+- 播放器右侧把手用 Pointer Events 拖动，更新 `.watch-layout` 的 `--watch-player`（fr 比例）；字幕有 420px 最小宽度，视频保持 16:9；比例写入 `enos.watch.playerRatio.v1`，双击/Home 重置，≤860px 隐藏把手；
+- 播放器贴最左，字幕窗口铺满右侧；每条字幕是一行三列：时间 / English / 中文，`align-items: baseline` 与统一的 1.7 行高让两侧按较长的一侧自然撑高；当前句同样使用左右两列；
+- 播放器下方是视频 Agent，右侧字幕保持 sticky；
+- Agent 通过 `watch-agent.js` 挂载，调用现有 `/api/chat` 流式接口；发送时把视频标题、频道、当前播放时间、当前句和完整字幕（超过 12k 字符时截取开头/当前段/结尾）拼进 system prompt；
+- Agent 没有 Key 时禁用输入并给出设置入口；有 Key 时支持流式气泡、快捷问题、清空会话；
+- 字幕面板提供「导出 MD」：标题、频道、视频 URL、时长、导出日期，以及 `时间 | English | 中文` 表格，使用 Blob 下载。
+
+### 15.7 测试
+
+- `tests/youtube.test.mjs` 覆盖两种搜索结果结构、JSON3 词级时间、无 offset 的均分、合并、官方中文对齐、瞬时登录重试与失败不缓存；
 - `scripts/video-check.mjs` 用 CDP 注入 fixture，验证两列字幕、当前词/中文字符高亮、无横向溢出，并生成截图；
 - 真实网络下通过本机代理验证了搜索、PoToken 字幕与播放器错误码；代理出口被 YouTube 标记时返回 `LOGIN_REQUIRED`，页面给出可操作提示。

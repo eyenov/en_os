@@ -15,6 +15,7 @@ import {
   parseTimedText,
   searchYouTube,
   segmentsToCues,
+  translateCuesFree,
 } from '../server/youtube.mjs';
 import { activeCharCount, cueProgress, findCueIndex, findWordIndex, normalizeCues } from '../public/js/subtitle-sync.js';
 
@@ -243,6 +244,41 @@ test('missing captions return metadata and a reason', async () => {
   assert.equal(data.title, 'No captions here');
 });
 
+test('a transient LOGIN_REQUIRED is retried and failures are not cached', async () => {
+  _clearCaches();
+  const loginHtml = `<script>var ytInitialPlayerResponse = ${JSON.stringify({
+    playabilityStatus: { status: 'LOGIN_REQUIRED', reason: 'Sign in to confirm you’re not a bot' },
+  })};</script>`;
+  let watchCalls = 0;
+  const fetchImpl = async (url) => {
+    if (String(url).includes('/watch')) {
+      watchCalls += 1;
+      return { ok: true, text: async () => (watchCalls === 1 ? loginHtml : playerHtml()) };
+    }
+    if (String(url).includes('timedtext')) {
+      const tlang = new URL(String(url)).searchParams.get('tlang');
+      return { ok: true, text: async () => JSON.stringify(tlang ? chinesePayload() : englishPayload()) };
+    }
+    return { ok: false, status: 404, text: async () => '' };
+  };
+
+  const recovered = await getVideoCaptions({ videoId: VIDEO_ID, fetchImpl });
+  assert.equal(recovered.hasCaptions, true);
+  assert.equal(watchCalls, 2);
+
+  _clearCaches();
+  let failingCalls = 0;
+  const failing = async () => {
+    failingCalls += 1;
+    return { ok: true, text: async () => loginHtml };
+  };
+  const first = await getVideoCaptions({ videoId: VIDEO_ID, fetchImpl: failing });
+  const second = await getVideoCaptions({ videoId: VIDEO_ID, fetchImpl: failing });
+  assert.equal(first.reason, 'LOGIN_REQUIRED');
+  assert.equal(second.reason, 'LOGIN_REQUIRED');
+  assert.equal(failingCalls, 4);
+});
+
 test('PoToken helper segments become word-level cues', () => {
   const cues = segmentsToCues([
     { start: 1, duration: 2.4, text: 'Hello world' },
@@ -255,6 +291,24 @@ test('PoToken helper segments become word-level cues', () => {
   assert.equal(cues[0].words[0].start, 1);
   assert.ok(cues[0].words[1].end <= 3.41);
   assert.ok(cues[1].start >= 6.5);
+});
+
+test('free translator maps numbered batches back to cues', async () => {
+  _clearCaches();
+  const fetchImpl = async () => ({
+    ok: true,
+    json: async () => [[
+      ['[[1]] 你好世界。\n[[2]] 这是第二句。', '[[1]] Hello world.\n[[2]] This is the second line.'],
+    ]],
+  });
+  const data = await translateCuesFree({
+    videoId: VIDEO_ID,
+    cues: [{ en: 'Hello world.' }, { en: 'This is the second line.' }],
+    fetchImpl,
+  });
+  assert.equal(data.engine, 'google');
+  assert.deepEqual(data.zh, ['你好世界。', '这是第二句。']);
+  assert.equal(data.batches, 1);
 });
 
 test('client subtitle timing helpers handle gaps, words and Chinese progress', () => {

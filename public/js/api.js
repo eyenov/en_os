@@ -220,6 +220,16 @@ export async function translateVideoCaptions(videoId, cues, { settings = getSett
   return response.json();
 }
 
+export async function translateVideoCaptionsFree(videoId, cues) {
+  const response = await fetch('/api/youtube/translate-free', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ videoId, cues: cues.map((cue) => ({ en: cue.en || cue.text || '' })) }),
+  });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}
+
 export async function testConnection(settings = getSettings()) {
   const started = performance.now();
   const data = await chat({

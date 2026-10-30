@@ -39,31 +39,64 @@
       <h1>正在读取视频与字幕</h1>
     </div>
     <div class="watch-layout">
-      <section class="player-panel">
-        <div class="player-shell">
-          <div id="yt-player" class="player-mount"></div>
-          <div id="player-fallback" class="player-fallback hidden"></div>
-        </div>
-        <div class="player-bar">
-          <span class="player-time" id="player-time">0:00 / 0:00</span>
-          <span class="player-sync" id="player-sync"><i></i><span>等待播放</span></span>
-          <span class="spacer"></span>
-          <a class="link-btn" id="open-youtube" href="https://www.youtube.com" target="_blank" rel="noreferrer">在 YouTube 打开 ↗</a>
-        </div>
-        <div class="now-line" id="now-line">
-          <div class="now-label">当前句 · NOW</div>
-          <p class="now-en" id="now-en">播放后，这里会显示当前英文句子。</p>
-          <p class="now-zh" id="now-zh">中文字幕会同步出现。</p>
-        </div>
-        <div class="player-notes">
+      <div class="watch-main">
+        <section class="player-panel">
+          <div class="player-shell">
+            <div id="yt-player" class="player-mount"></div>
+            <div id="player-fallback" class="player-fallback hidden"></div>
+            <button class="player-resize" id="player-resize" type="button"
+              title="拖动调整播放器大小 · 双击重置"
+              aria-label="拖动调整播放器大小" aria-orientation="vertical"
+              aria-valuemin="40" aria-valuemax="280" aria-valuenow="138"></button>
+          </div>
+          <div class="player-bar">
+            <span class="player-time" id="player-time">0:00 / 0:00</span>
+            <span class="player-sync" id="player-sync"><i></i><span>等待播放</span></span>
+            <span class="spacer"></span>
+            <span class="player-resize-hint">拖动右缘调整大小</span>
+            <a class="link-btn" id="open-youtube" href="https://www.youtube.com" target="_blank" rel="noreferrer">在 YouTube 打开 ↗</a>
+          </div>
+          <div class="now-line" id="now-line">
+            <div class="now-label">当前句 · NOW</div>
+            <div class="now-text">
+              <p class="now-en" id="now-en">播放后，这里会显示当前英文句子。</p>
+              <p class="now-zh" id="now-zh">中文字幕会同步出现。</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="agent-panel" id="agent-panel" aria-label="视频学习 Agent">
+          <div class="agent-head">
+            <div>
+              <p class="eyebrow">VIDEO AGENT</p>
+              <h2>和 Agent 聊这段视频</h2>
+              <p id="agent-status">结合当前句、字幕和播放位置回答</p>
+            </div>
+            <button class="btn btn-ghost btn-sm" id="agent-clear" type="button">清空</button>
+          </div>
+          <div class="agent-messages" id="agent-messages" aria-live="polite"></div>
+          <div class="agent-suggestions" id="agent-suggestions">
+            <button type="button" data-prompt="解释当前句子的语法、关键词和地道表达。">解释当前句</button>
+            <button type="button" data-prompt="用 3 句话总结这段视频的主要观点。">总结视频</button>
+            <button type="button" data-prompt="从刚才的字幕里挑 5 个值得记的雅思表达，并各写一个例句。">挑 5 个表达</button>
+          </div>
+          <form class="agent-form" id="agent-form">
+            <textarea id="agent-input" rows="2" maxlength="2000" placeholder="问 Agent：这句话为什么用这个时态？"></textarea>
+            <button class="btn btn-primary" id="agent-send" type="submit">发送</button>
+          </form>
+          <p class="agent-hint" id="agent-hint">Enter 发送 · Shift + Enter 换行</p>
+        </section>
+
+        <section class="player-notes">
           <h3>怎么用这一页</h3>
           <ol>
             <li><strong>盲听一遍</strong>：先不看字幕，抓住大意。</li>
             <li><strong>跟读一句</strong>：点右侧任意一句，会跳到对应时间；跟着读。</li>
-            <li><strong>记住一个词</strong>：当前单词会逐个亮起，结束后回看整句。</li>
+            <li><strong>问 Agent</strong>：卡住时问语法、词汇或让 Agent 总结这一段。</li>
+            <li><strong>导出复习</strong>：把中英字幕导出成 Markdown，之后复习。</li>
           </ol>
-        </div>
-      </section>
+        </section>
+      </div>
 
       <aside class="subtitle-panel" aria-label="双语字幕">
         <div class="subtitle-head">
@@ -72,18 +105,15 @@
             <p id="subtitle-status">正在加载字幕…</p>
           </div>
           <div class="subtitle-tools">
-            <button class="btn btn-soft btn-sm hidden" id="translate-btn" type="button">AI 中文字幕</button>
+            <button class="btn btn-soft btn-sm hidden" id="translate-btn" type="button">重试翻译</button>
+            <button class="btn btn-ghost btn-sm hidden" id="export-md" type="button" title="导出中英字幕 Markdown">导出 MD</button>
             <label class="sub-toggle"><input type="checkbox" id="auto-scroll" checked /> 自动滚动</label>
           </div>
         </div>
-        <div class="subtitle-columns" id="subtitle-columns">
+        <div class="subtitle-columns single" id="subtitle-columns">
           <div class="sub-col">
-            <div class="sub-col-title"><span>EN</span> English</div>
+            <div class="sub-col-title"><span>EN</span> English <b class="sub-col-sep">·</b> <span class="zh-badge">中</span> 中文</div>
             <div class="sub-scroll" id="sub-en"></div>
-          </div>
-          <div class="sub-col">
-            <div class="sub-col-title"><span>中</span> 中文</div>
-            <div class="sub-scroll" id="sub-zh"></div>
           </div>
         </div>
         <div class="subtitle-foot">

@@ -17,7 +17,7 @@ import {
 } from './providers.mjs';
 import { searchWeb } from './search.mjs';
 import { extractFromUrl } from './extract.mjs';
-import { getVideoCaptions, searchYouTube, translateCues } from './youtube.mjs';
+import { getVideoCaptions, searchYouTube, translateCues, translateCuesFree } from './youtube.mjs';
 
 const ROOT = path.dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -271,7 +271,9 @@ async function handleYoutubeSearch(req, res) {
 
 async function handleYoutubeCaptions(req, res) {
   const body = await readBody(req);
-  const result = await getVideoCaptions({ videoId: String(body.videoId || '').trim() });
+  const videoId = String(body.videoId || '').trim();
+  const result = await getVideoCaptions({ videoId });
+  console.log(`[youtube] captions ${videoId} cues=${result.cues.length} reason=${result.reason || '-'} source=${result.source || '-'}`);
   sendJSON(res, 200, result);
 }
 
@@ -285,6 +287,18 @@ async function handleYoutubeTranslate(req, res) {
     cues,
     config,
   });
+  sendJSON(res, 200, result);
+}
+
+async function handleYoutubeTranslateFree(req, res) {
+  const body = await readBody(req);
+  const cues = Array.isArray(body.cues) ? body.cues : [];
+  if (!cues.length) throw new HttpError(400, '缺少字幕内容。', 'BAD_CUES');
+  const result = await translateCuesFree({
+    videoId: String(body.videoId || ''),
+    cues,
+  });
+  console.log(`[youtube] free-translate ${String(body.videoId || '')} lines=${cues.length} engine=${result.engine}`);
   sendJSON(res, 200, result);
 }
 
@@ -374,7 +388,8 @@ const server = http.createServer(async (req, res) => {
       }
       if (rateLimited(ip)) throw new HttpError(429, '请求太频繁，请稍后再试。', 'RATE_LIMIT');
       if (urlPath === '/api/chat' || urlPath === '/api/search' || urlPath === '/api/extract' || urlPath === '/api/word'
-        || urlPath === '/api/youtube/search' || urlPath === '/api/youtube/captions' || urlPath === '/api/youtube/translate') {
+        || urlPath === '/api/youtube/search' || urlPath === '/api/youtube/captions' || urlPath === '/api/youtube/translate'
+        || urlPath === '/api/youtube/translate-free') {
         if (req.method !== 'POST') throw new HttpError(405, '该接口只接受 POST。', 'METHOD_NOT_ALLOWED');
         if (urlPath === '/api/chat') {
           await handleChat(req, res);
@@ -404,6 +419,11 @@ const server = http.createServer(async (req, res) => {
         if (urlPath === '/api/youtube/translate') {
           await handleYoutubeTranslate(req, res);
           console.log(`[api] youtube-translate ${res.statusCode} ${Date.now() - started}ms`);
+          return;
+        }
+        if (urlPath === '/api/youtube/translate-free') {
+          await handleYoutubeTranslateFree(req, res);
+          console.log(`[api] youtube-translate-free ${res.statusCode} ${Date.now() - started}ms`);
           return;
         }
         await handleSearch(req, res);

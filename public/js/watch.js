@@ -1,7 +1,8 @@
-import { aiReady, fetchVideoCaptions, getHealth, translateVideoCaptions } from './api.js';
+import { aiReady, fetchVideoCaptions, getHealth, translateVideoCaptions, translateVideoCaptionsFree } from './api.js';
 import { getSettings } from './store.js';
 import { activeCharCount, cueProgress, findCueIndex, findWordIndex, formatTimestamp, normalizeCues } from './subtitle-sync.js';
 import { h, icon, toast } from './ui.js';
+import { mountAgent } from './watch-agent.js';
 
 const params = new URLSearchParams(window.location.search);
 const videoId = String(params.get('v') || '').trim();
@@ -19,9 +20,9 @@ const nowLine = document.getElementById('now-line');
 const nowEn = document.getElementById('now-en');
 const nowZh = document.getElementById('now-zh');
 const subEn = document.getElementById('sub-en');
-const subZh = document.getElementById('sub-zh');
 const columns = document.getElementById('subtitle-columns');
 const translateBtn = document.getElementById('translate-btn');
+const exportBtn = document.getElementById('export-md');
 const autoScrollInput = document.getElementById('auto-scroll');
 const openYoutube = document.getElementById('open-youtube');
 const backLink = document.getElementById('back-to-search');
@@ -36,10 +37,10 @@ let activeWord = -1;
 let activeChars = -1;
 let ticker = null;
 let cueEls = [];
-let zhEls = [];
 let wordEls = [];
 let charEls = [];
 let translating = false;
+let zhState = 'idle';
 let currentTime = 0;
 let autoScroll = true;
 
@@ -68,7 +69,10 @@ function renderHead(data) {
   if (data?.duration) meta.push(h('span', {}, data.duration));
   if (data?.viewCount) meta.push(h('span', {}, data.viewCount));
   if (data?.hasCaptions) meta.push(h('span', { class: 'badge ok' }, '逐词字幕'));
-  if (data?.hasChinese) meta.push(h('span', { class: 'badge accent' }, '官方中文'));
+  if (data?.hasChinese) {
+    const zhLabel = data.zhSource === 'ai' ? 'AI 中文' : data.zhSource === 'google' ? '自动中文' : '官方中文';
+    meta.push(h('span', { class: 'badge accent' }, zhLabel));
+  }
   if (data?.source) meta.push(h('span', { class: 'badge' }, data.source === 'youtube-po-token' ? 'PoToken' : 'YouTube'));
   head.replaceChildren(
     h('p', { class: 'eyebrow' }, data ? 'YouTube · Word by word' : 'YouTube · Loading'),
@@ -115,11 +119,18 @@ function showEmpty(reason) {
   subEn.replaceChildren(h('div', { class: 'subtitle-empty' },
     h('strong', {}, '没有可用字幕'),
     h('p', {}, messages[reason] || '这个视频没有提供字幕。'),
-    h('a', { class: 'btn btn-ghost btn-sm', href: query ? `/videos.html?q=${encodeURIComponent(query)}` : '/videos.html', style: 'margin-top:10px' }, '返回结果换一个'),
-  ));
-  subZh.replaceChildren(h('div', { class: 'subtitle-empty' },
-    h('strong', {}, '中文字幕不可用'),
-    h('p', {}, '先换一个有英文字幕的视频。'),
+    h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:10px' },
+      h('button', {
+        class: 'btn btn-soft btn-sm',
+        type: 'button',
+        onclick: () => {
+          statusEl.textContent = '重新读取字幕…';
+          hintEl.textContent = 'YouTube 的登录验证是瞬时的，稍等几秒可以重试';
+          loadCaptions();
+        },
+      }, '重新读取字幕'),
+      h('a', { class: 'btn btn-ghost btn-sm', href: query ? `/videos.html?q=${encodeURIComponent(query)}` : '/videos.html' }, '返回结果换一个'),
+    ),
   ));
 }
 
@@ -131,14 +142,11 @@ function showCaptionError(error) {
     h('p', {}, error.message || '请稍后重试。'),
     h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => loadCaptions(), style: 'margin-top:10px' }, '重试'),
   ));
-  subZh.replaceChildren(h('div', { class: 'subtitle-empty' }, h('p', {}, '中文字幕也需要先读取英文字幕。')));
 }
 
 function renderSubtitles() {
   subEn.replaceChildren();
-  subZh.replaceChildren();
   cueEls = [];
-  zhEls = [];
   wordEls = [];
   charEls = [];
   activeCue = -1;
@@ -146,15 +154,22 @@ function renderSubtitles() {
   activeChars = -1;
   const hasZh = cues.some((cue) => cue.zh);
 
+  if (!hasZh) {
+    const loading = zhState === 'loading';
+    const failed = zhState === 'failed';
+    subEn.append(h('div', { class: 'subtitle-note' },
+      h('strong', {}, loading ? '正在自动翻译中文字幕…' : failed ? '中文自动翻译失败' : '暂无中文字幕'),
+      h('span', {}, loading
+        ? '英文已经可以逐词高亮，中文稍后补上；不配置 Key 也会用免费翻译。'
+        : failed
+          ? '可以点「重试翻译」，或到设置页配置模型 Key 后刷新。'
+          : '这个视频没有官方中文轨，正在准备自动翻译。'),
+    ));
+  }
+
   cues.forEach((cue, index) => {
     const words = wordsOf(cue);
     const wordNodes = [];
-    const enCue = h('button', {
-      class: 'cue',
-      type: 'button',
-      onclick: () => seek(cue.start),
-      'data-index': String(index),
-    }, h('span', { class: 'cue-time' }, formatTimestamp(cue.start)));
     const enLine = h('span', { class: 'cue-en' });
     words.forEach((word, wordIndex) => {
       const node = h('span', {
@@ -170,19 +185,7 @@ function renderSubtitles() {
       enLine.append(node);
       if (wordIndex < words.length - 1) enLine.append(document.createTextNode(' '));
     });
-    enCue.append(enLine);
 
-    cueEls.push(enCue);
-    wordEls.push(wordNodes);
-    subEn.append(enCue);
-    if (!hasZh) return;
-
-    const zhCue = h('button', {
-      class: 'cue zh-cue',
-      type: 'button',
-      onclick: () => seek(cue.start),
-      'data-index': String(index),
-    }, h('span', { class: 'cue-time' }, formatTimestamp(cue.start)));
     const zhText = h('span', { class: 'zh-text' });
     const chars = [];
     if (cue.zh) {
@@ -192,35 +195,38 @@ function renderSubtitles() {
         zhText.append(span);
       }
     } else {
-      zhText.append(document.createTextNode('—'));
+      zhText.append(document.createTextNode(zhState === 'loading' ? '…' : '—'));
     }
-    zhCue.append(zhText);
 
-    zhEls.push(zhCue);
+    const row = h('button', {
+      class: 'cue',
+      type: 'button',
+      onclick: () => seek(cue.start),
+      'data-index': String(index),
+    },
+    h('span', { class: 'cue-time' }, formatTimestamp(cue.start)),
+    enLine,
+    zhText);
+
+    cueEls.push(row);
+    wordEls.push(wordNodes);
     charEls.push(chars);
-    subZh.append(zhCue);
+    subEn.append(row);
   });
-
-  if (!hasZh) {
-    subZh.append(h('div', { class: 'subtitle-empty' },
-      h('strong', {}, '暂无中文字幕'),
-      h('p', {}, '这个视频没有官方中文轨。配置模型 Key 后，点右上角「AI 中文字幕」按句生成。'),
-    ));
-  }
 
   syncTime(currentTime);
 }
 
 function scrollToCue(index) {
   if (!autoScroll || index < 0) return;
-  for (const [container, element] of [[subEn, cueEls[index]], [subZh, zhEls[index]]]) {
-    if (!container || !element) continue;
-    const containerRect = container.getBoundingClientRect();
-    const elementRect = element.getBoundingClientRect();
-    const top = elementRect.top - containerRect.top + container.scrollTop;
-    if (top < container.scrollTop + 8 || top + elementRect.height > container.scrollTop + container.clientHeight - 8) {
-      container.scrollTo({ top: Math.max(0, top - container.clientHeight * 0.3), behavior: 'smooth' });
-    }
+  const container = subEn;
+  const element = cueEls[index];
+  if (!container || !element) return;
+  const containerRect = container.getBoundingClientRect();
+  const elementRect = element.getBoundingClientRect();
+  const top = elementRect.top - containerRect.top + container.scrollTop;
+  if (top < container.scrollTop + 8 || top + elementRect.height > container.scrollTop + container.clientHeight - 8) {
+    container.scrollTo({ top: Math.max(0, top - container.clientHeight * 0.3), behavior: 'smooth' });
   }
 }
 
@@ -240,18 +246,15 @@ function setActiveCue(index) {
   if (index === activeCue) return;
   if (activeCue >= 0) {
     cueEls[activeCue]?.classList.remove('active');
-    zhEls[activeCue]?.classList.remove('active');
     wordEls[activeCue]?.forEach((word) => word.classList.remove('active'));
     charEls[activeCue]?.forEach((char) => char.classList.remove('active'));
   }
   cueEls.forEach((element, cueIndex) => element.classList.toggle('past', cueIndex < index));
-  zhEls.forEach((element, cueIndex) => element.classList.toggle('past', cueIndex < index));
   activeCue = index;
   activeWord = -1;
   activeChars = -1;
   if (index >= 0) {
     cueEls[index]?.classList.add('active');
-    zhEls[index]?.classList.add('active');
     scrollToCue(index);
   }
   updateNowLine(index);
@@ -391,6 +394,11 @@ function mountPlayer() {
           playerReady = true;
           fallback.classList.add('hidden');
           duration = Math.round(event.target.getDuration?.() || duration);
+          try {
+            event.target.setOption?.('captions', 'track', {});
+            event.target.unloadModule?.('captions');
+            event.target.unloadModule?.('cc');
+          } catch { /* native CC may not be loaded */ }
           paintTime(0);
           syncEl.classList.remove('on');
         },
@@ -415,80 +423,204 @@ function mountPlayer() {
 async function loadCaptions() {
   try {
     const data = await fetchVideoCaptions(videoId);
-    captions = data;
+    captions = { ...data, zhSource: data.hasChinese ? 'official' : null };
     cues = normalizeCues(data.cues || []);
-    renderHead(data);
+    renderHead(captions);
     if (!cues.length) {
+      exportBtn.classList.add('hidden');
       showEmpty(data.reason);
       return;
     }
+
+    zhState = data.hasChinese ? 'done' : 'loading';
     renderSubtitles();
+    exportBtn.classList.remove('hidden');
+    exportBtn.disabled = !data.hasChinese;
+    translateBtn.classList.add('hidden');
     statusEl.textContent = data.hasChinese
       ? `共 ${cues.length} 句 · 英文逐词高亮 · 官方中文字幕`
-      : `共 ${cues.length} 句 · 英文逐词高亮 · 中文待生成`;
+      : `共 ${cues.length} 句 · 英文逐词高亮 · 正在自动翻译中文…`;
     hintEl.textContent = '点击任意一句跳转 · 单词逐个高亮';
 
     if (data.hasChinese) {
-      translateBtn.classList.add('hidden');
+      exportBtn.disabled = false;
       return;
     }
 
     await getHealth().catch(() => null);
-    if (aiReady(getSettings())) {
-      translateBtn.classList.remove('hidden');
-      translateBtn.textContent = 'AI 中文字幕';
-      translateBtn.disabled = false;
-      translateBtn.onclick = translate;
-    } else {
-      translateBtn.classList.remove('hidden');
-      translateBtn.textContent = '配置 Key';
-      translateBtn.disabled = false;
-      translateBtn.onclick = () => { window.location.href = '/#/settings'; };
-      hintEl.textContent = '该视频没有官方中文字幕；配置 Key 后可生成';
-    }
+    translate();
   } catch (error) {
     showCaptionError(error);
   }
 }
 
+async function translateWith(engine, chunkSize = 200) {
+  const zh = [];
+  const totalChunks = Math.ceil(cues.length / chunkSize);
+  for (let index = 0; index < cues.length; index += chunkSize) {
+    const part = cues.slice(index, index + chunkSize);
+    const current = Math.floor(index / chunkSize) + 1;
+    statusEl.textContent = `正在自动翻译中文字幕 ${current}/${totalChunks}…`;
+    const data = engine === 'ai'
+      ? await translateVideoCaptions(videoId, part, { settings: getSettings() })
+      : await translateVideoCaptionsFree(videoId, part);
+    const lines = Array.isArray(data.zh) ? data.zh : [];
+    if (lines.length !== part.length) throw new Error('翻译结果条数不一致，请重试。');
+    zh.push(...lines.map((line) => String(line || '')));
+  }
+  return zh;
+}
+
 async function translate() {
   if (translating || !cues.length) return;
   translating = true;
+  zhState = 'loading';
+  translateBtn.classList.add('hidden');
   translateBtn.disabled = true;
-  translateBtn.innerHTML = '<span class="spinner dark"></span> 翻译';
-  statusEl.textContent = '正在生成中文字幕，按句批量翻译…';
+  exportBtn.disabled = true;
+  renderSubtitles();
+  statusEl.textContent = '正在根据英文字幕自动翻译中文…';
+
   try {
-    const chunkSize = 200;
-    const zh = [];
-    const totalChunks = Math.ceil(cues.length / chunkSize);
-    for (let index = 0; index < cues.length; index += chunkSize) {
-      const part = cues.slice(index, index + chunkSize);
-      const current = Math.floor(index / chunkSize) + 1;
-      statusEl.textContent = `正在生成中文字幕 ${current}/${totalChunks}…`;
-      translateBtn.innerHTML = `<span class="spinner dark"></span> ${current}/${totalChunks}`;
-      const data = await translateVideoCaptions(videoId, part, { settings: getSettings() });
-      const lines = Array.isArray(data.zh) ? data.zh : [];
-      if (lines.length !== part.length) throw new Error('翻译结果条数不一致，请重试。');
-      zh.push(...lines);
+    const settings = getSettings();
+    const wantsAI = aiReady(settings);
+    let engine = wantsAI ? 'ai' : 'google';
+    let zh;
+    if (wantsAI) {
+      try {
+        zh = await translateWith('ai');
+      } catch (aiError) {
+        statusEl.textContent = '模型翻译失败，改用免费翻译…';
+        zh = await translateWith('free');
+        engine = 'google';
+      }
+    } else {
+      zh = await translateWith('free');
     }
-    if (zh.length !== cues.length) throw new Error('翻译结果条数不一致，请重试。');
+
+    if (!zh.some(Boolean)) throw new Error('翻译结果为空，请重试。');
     cues.forEach((cue, index) => { cue.zh = zh[index] || ''; });
-    captions = { ...captions, hasChinese: true };
+    captions = { ...captions, hasChinese: true, zhSource: engine === 'ai' ? 'ai' : 'google' };
+    zhState = 'done';
     renderSubtitles();
-    statusEl.textContent = `共 ${cues.length} 句 · 英文逐词高亮 · AI 中文字幕`;
-    hintEl.textContent = '点击任意一句跳转 · 单词逐个高亮';
-    translateBtn.classList.add('hidden');
-    toast('中文字幕已生成', 'ok', 2200);
+    exportBtn.disabled = false;
+    statusEl.textContent = `共 ${cues.length} 句 · 英文逐词高亮 · ${engine === 'ai' ? 'AI 中文字幕' : '自动中文字幕'}`;
+    hintEl.textContent = '中英字幕已同步 · 可导出 Markdown';
     renderHead(captions);
+    toast(engine === 'ai' ? '中文字幕已生成' : '免费翻译已补全中文字幕', 'ok', 2400);
   } catch (error) {
-    statusEl.textContent = '中文生成失败，可重试';
+    zhState = 'failed';
+    renderSubtitles();
     translateBtn.classList.remove('hidden');
     translateBtn.textContent = '重试翻译';
-    toast(error.message || '翻译失败', 'err', 4200);
+    statusEl.textContent = '中文自动翻译失败';
+    hintEl.textContent = '可以重试，或到设置页配置模型 Key';
+    toast(error.message || '自动翻译失败', 'err', 4200);
   } finally {
     translating = false;
     translateBtn.disabled = false;
+    exportBtn.disabled = false;
   }
+}
+
+function exportMarkdown() {
+  if (!cues.length) {
+    toast('还没有可导出的字幕', 'err', 2400);
+    return;
+  }
+  const escape = (value) => String(value || '').replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
+  const title = captions?.title || 'YouTube video';
+  const lines = [
+    `# ${escape(title)}`,
+    '',
+    `- 频道：${escape(captions?.channel || '—')}`,
+    `- 视频：https://www.youtube.com/watch?v=${videoId}`,
+    `- 时长：${captions?.duration || formatTimestamp(captions?.durationSeconds || duration)}`,
+    `- 导出：${new Date().toISOString().slice(0, 10)} · EnOS 逐词字幕`,
+    '',
+    '## 中英字幕',
+    '',
+    '| 时间 | English | 中文 |',
+    '| --- | --- | --- |',
+    ...cues.map((cue) => `| ${formatTimestamp(cue.start)} | ${escape(cue.en)} | ${escape(cue.zh || '—')} |`),
+    '',
+  ];
+  const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const safeTitle = title.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || videoId;
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `${safeTitle}-bilingual.md`;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  toast('Markdown 已导出', 'ok', 2400);
+}
+
+function initPlayerResize() {
+  const layout = document.querySelector('.watch-layout');
+  const handle = document.getElementById('player-resize');
+  const main = document.querySelector('.watch-main');
+  if (!layout || !handle || !main) return;
+
+  const KEY = 'enos.watch.playerRatio.v1';
+  const DEFAULT_RATIO = 1.38;
+  let ratio = DEFAULT_RATIO;
+  try { ratio = Number(localStorage.getItem(KEY)) || DEFAULT_RATIO; } catch { /* private mode */ }
+
+  const apply = (value, save = true) => {
+    ratio = Math.min(2.8, Math.max(0.4, value));
+    layout.style.setProperty('--watch-player', `${ratio.toFixed(3)}fr`);
+    handle.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
+    if (save) {
+      try { localStorage.setItem(KEY, String(ratio.toFixed(3))); } catch { /* private mode */ }
+    }
+  };
+  apply(ratio, false);
+
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || window.innerWidth <= 860) return;
+    event.preventDefault();
+    const rect = layout.getBoundingClientRect();
+    const gap = Number.parseFloat(getComputedStyle(layout).columnGap) || 12;
+    const startWidth = main.getBoundingClientRect().width;
+    const minWidth = 320;
+    const maxWidth = Math.max(minWidth, rect.width - gap - 420);
+    const startX = event.clientX;
+    let finished = false;
+    try { handle.setPointerCapture(event.pointerId); } catch { /* ignore */ }
+    document.body.classList.add('resizing-player');
+
+    const move = (moveEvent) => {
+      if (moveEvent.cancelable) moveEvent.preventDefault();
+      const width = Math.max(minWidth, Math.min(maxWidth, startWidth + moveEvent.clientX - startX));
+      const subtitle = Math.max(320, rect.width - gap - width);
+      apply(width / subtitle, false);
+    };
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      window.removeEventListener('pointermove', move);
+      document.body.classList.remove('resizing-player');
+      apply(ratio, true);
+      try { handle.releasePointerCapture(event.pointerId); } catch { /* ignore */ }
+    };
+    window.addEventListener('pointermove', move, { passive: false });
+    window.addEventListener('pointerup', finish, { once: true });
+    window.addEventListener('pointercancel', finish, { once: true });
+  });
+
+  handle.addEventListener('dblclick', () => apply(DEFAULT_RATIO));
+  handle.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      event.preventDefault();
+      apply(ratio + (event.key === 'ArrowRight' ? 0.08 : -0.08));
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      apply(DEFAULT_RATIO);
+    }
+  });
 }
 
 function boot() {
@@ -502,6 +634,13 @@ function boot() {
     mountPlayer();
     loadCaptions();
   }
+  mountAgent({
+    videoId,
+    getState: () => ({ captions, cues, currentTime }),
+  });
+  translateBtn?.addEventListener('click', translate);
+  exportBtn?.addEventListener('click', exportMarkdown);
+  initPlayerResize();
   autoScrollInput?.addEventListener('change', () => {
     autoScroll = autoScrollInput.checked;
     if (autoScroll && activeCue >= 0) scrollToCue(activeCue);

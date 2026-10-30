@@ -1,4 +1,4 @@
-﻿# EnOS · 雅思语境学习
+# EnOS · 雅思语境学习
 
 > 一句英文，走完雅思四项。  
 > 输入你正在读的英文，EnOS 按 **听力 → 阅读 → 口语 → 写作** 由易到难拆成 **8 个不超过 5 分钟**的微任务；每步支持点击与语音，通关后生成一份独立的学习报告。
@@ -182,10 +182,14 @@ npm run smoke   # 真实浏览器端到端（需先 npm start，使用本机 Chr
 顶部导航 **视频** → `/videos.html`。输入英文关键词搜索 YouTube，结果以缩略图卡片列出：
 
 - 缩略图、时长、标题、频道、播放量 / 发布时间，以及网页检索能识别到的 **CC** 标记；
-- 点卡片进入 `/watch.html?v=<videoId>`：左侧嵌入 YouTube 播放器，右侧是 **English / 中文** 两列纵向字幕；
+- 点卡片进入 `/watch.html?v=<videoId>`：**播放器贴最左，字幕窗口铺满右侧**；每条字幕在同一行显示英文与中文，当前句也使用同一行对照，行高由较长的一侧决定；
+- **播放器右侧有拖动把手**：左右拖动调整播放器与字幕的宽度比例，视频保持 16:9；比例存在 localStorage，双击把手或按 Home 重置；窄屏自动隐藏；
+- **播放器下方是视频 Agent 对话窗口**，会把当前播放句与完整字幕（超长视频截断）带进上下文；
 - 字幕跟随播放位置滚动，英文 **逐词高亮**，中文按句内进度逐字高亮；
 - 点任意一句跳到对应时间，点单词跳到该词；可关闭自动滚动；
-- 官方中文字幕优先；没有时，配置了 AI Key 可以按句批量生成中文字幕。
+- 官方中文字幕优先；没有官方中文时**自动翻译**：配置了模型 Key 用当前 chat 模型，未配置则走免 Key 的 Google Translate 兜底；
+- 「导出 MD」把标题、频道、视频链接、时间和中英逐句字幕写成 Markdown 下载；
+- Agent 需要模型 Key（设置页配置）；没有 Key 时对话窗口会给出配置入口。
 
 **搜索**优先使用 YouTube Data API v3（设置页填写 Key，或服务端 `YOUTUBE_API_KEY`）；没有 Key 时解析公开搜索结果页（`ytInitialData`，兼容 `videoRenderer` 与新的 `lockupViewModel`）。两者都失败会给出可操作的错误，并保留跳转 YouTube 的入口。
 
@@ -209,15 +213,19 @@ npm start
 - 自动字幕通常带 `tOffsetMs`，直接得到每个词的起止时间；
 - 人工字幕只有句级时间，按词长比例分配到句内；
 - 相邻短句会合并成一行（≤ 92 字符 / 8 秒），但保留词级时间；
-- 官方中文用同一条字幕轨加 `tlang=zh-Hans` 获取，按时间重叠对齐到英文句；为空时再走 AI 翻译。
+- 官方中文用同一条字幕轨加 `tlang=zh-Hans` 获取，按时间重叠对齐到英文句；为空时自动翻译；
+- 自动翻译优先使用设置页的 chat 模型；没有 Key（或模型调用失败）时用 Google Translate 的公开接口，按 20 句一批并加编号回填，避免逐条请求；有 Key 时自动翻译会消耗少量模型调用，可以在设置里关闭 AI 模式改走免费翻译；
+- 免 Key 翻译会把英文字幕发送到 Google；不想走公共接口时，配置任意 chat 模型 Key 即可改用模型。
 
 2026 年起 YouTube 对字幕请求要求 **PoToken**，没有 token 会返回空 `200`。因此当直接读到的内容是空的，服务端会再调用 `get-youtube-transcript` 生成视频绑定的 PoToken，然后携带 `&pot=...&c=WEB` 重新请求；这一步失败时会显示可操作的错误，而不是静默空白。
 
 ![视频搜索](docs/screenshots/video-search.png)
 
-![逐词双语字幕](docs/screenshots/video-watch.png)
+![播放器、双语字幕与视频 Agent](docs/screenshots/video-watch.png)
 
 **边界**：不是每个视频都有字幕或允许嵌入；没有字幕时仍可播放，但不会高亮。字幕读取依赖本机 Node 能访问 YouTube；网络受限时播放器仍可能由浏览器直接加载，但服务端拿不到字幕。嵌入播放器由 YouTube 提供，浏览器会直接连接 Google；本机代理只读取公开视频页与字幕轨。
+
+**右侧一直没有字幕时**：先刷新页面。YouTube 的机器人验证是瞬时的，服务端现在会对 watch 页换 URL 重试，并且**不缓存 `LOGIN_REQUIRED` / `CAPTION_FETCH_FAILED`**；仍为空可点面板里的「重新读取字幕」。服务端日志会输出 `[youtube] captions <id> cues=... reason=...`，方便确认是瞬时验证还是视频本身没有字幕。
 
 ---
 
@@ -398,7 +406,7 @@ en_os/
 │  ├─ providers.mjs     # 服务商注册表、OpenAI 兼容 chat、错误归一化
 │  ├─ search.mjs        # 三家原生搜索 + 维基/DDG 兜底 + 原文截取调度
 │  ├─ extract.mjs       # 网页正文抽取、句子边界截取、英文判定、抓取安全限制
-│  └─ youtube.mjs       # YouTube 搜索、captions/timedtext、PoToken 回退、逐词时间轴、AI 翻译
+│  └─ youtube.mjs       # YouTube 搜索、captions/timedtext、PoToken 回退、逐词时间轴、模型/免费翻译
 ├─ public/
 │  ├─ index.html        # 学习 SPA
 │  ├─ report.html       # 独立报告页
@@ -416,12 +424,13 @@ en_os/
 │     ├─ tasks.js       # 8 种任务渲染器（views/tasks.js）
 │     ├─ session.js     # 学习状态机、计时、语音助手
 │     ├─ videos.js / watch.js # 视频搜索与播放页
+│     ├─ watch-agent.js # 播放器下方的视频 Agent（流式对话、字幕上下文）
 │     ├─ home.js / settings.js / reports.js / listening.js
 │     ├─ report.js      # 报告页渲染、雷达图、导出
 │     ├─ api.js / store.js / speech.js / ui.js / art.js
 │     └─ app.js         # hash 路由
 ├─ data/core100.json    # 100 个雅思核心词句
-├─ tests/               # node:test（66 个测试）
+├─ tests/               # node:test（68 个测试）
 ├─ scripts/             # 校验、CDP 端到端（学习 / 视频）、mock provider
 └─ docs/
 ```
@@ -499,7 +508,7 @@ en_os/
 npm test
 ```
 
-- **66 个测试**：数据完整性、分析、8 步 payload 合法性、阈值判定、报告汇总、AI 覆盖校验、提示词、跟读比对、写作评分、语音指令、模块顺序、网页正文抽取与句子边界截取、听力对话校验 / 成分对齐 / 真实短句 / 本地模板 / 结果文本 / 语音分块偏移、逐词语音队列、语音边界偏移、鼠标取词（分词 / 词形还原 / 本课词表）、YouTube 搜索解析（videoRenderer / lockupViewModel）、timedtext 词级时间轴、PoToken 段落转词级、字幕合并与中英对齐、服务端 chat / 流式 / 搜索 / 原文抓取 / 单词释义 / 视频路由 / 安全。
+- **68 个测试**：数据完整性、分析、8 步 payload 合法性、阈值判定、报告汇总、AI 覆盖校验、提示词、跟读比对、写作评分、语音指令、模块顺序、网页正文抽取与句子边界截取、听力对话校验 / 成分对齐 / 真实短句 / 本地模板 / 结果文本 / 语音分块偏移、逐词语音队列、语音边界偏移、鼠标取词（分词 / 词形还原 / 本课词表）、YouTube 搜索解析（videoRenderer / lockupViewModel）、timedtext 词级时间轴、PoToken 段落转词级、字幕合并与中英对齐、瞬时登录重试与失败不缓存、免费翻译编号回填、服务端 chat / 流式 / 搜索 / 原文抓取 / 单词释义 / 视频路由 / 安全。
 - 服务端测试会自建 mock provider 与本地文章页，不依赖外网。
 
 真实浏览器端到端：

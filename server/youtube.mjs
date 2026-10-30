@@ -568,10 +568,55 @@ async function poTokenCues(videoId, languages = ['en']) {
     throw new Error('PO_TOKEN_HELPER_MISSING');
   }
   if (typeof helper.getTranscript !== 'function') throw new Error('PO_TOKEN_HELPER_MISSING');
-  const result = await helper.getTranscript(videoId, { languages });
-  const cues = segmentsToCues(result.segments || []);
-  if (!cues.length) throw new Error('Empty transcript');
-  return { cues, language: result.language || '' };
+
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const result = await helper.getTranscript(videoId, { languages });
+      const cues = segmentsToCues(result.segments || []);
+      if (!cues.length) throw new Error('Empty transcript');
+      return { cues, language: result.language || '' };
+    } catch (error) {
+      lastError = error;
+      if (/PO_TOKEN_HELPER_MISSING/i.test(String(error?.message || ''))) break;
+      if (attempt === 0) await sleep(300);
+    }
+  }
+  throw lastError;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * YouTube's bot gate is flaky: the same video can return LOGIN_REQUIRED once
+ * and a normal player response a second later. Try a couple of URL variants
+ * before treating it as a real failure.
+ */
+async function fetchWatchPlayer(videoId, fetchImpl) {
+  const urls = [
+    `${YOUTUBE}/watch?v=${videoId}&hl=en&gl=US`,
+    `${YOUTUBE}/watch?v=${videoId}&hl=en&gl=US&bpctr=9999999999&has_verified=1`,
+  ];
+  let lastPlayer = null;
+  let lastError = null;
+  for (let attempt = 0; attempt < urls.length; attempt += 1) {
+    try {
+      const html = await fetchText(urls[attempt], { timeoutMs: 15_000, fetchImpl });
+      const player = playerFromHtml(html);
+      if (player) {
+        lastPlayer = player;
+        const tracks = player.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+        if (player.playabilityStatus?.status === 'OK' || tracks.length) return player;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    if (attempt < urls.length - 1) await sleep(250);
+  }
+  if (lastPlayer) return lastPlayer;
+  throw lastError || new Error('YouTube 返回了无法识别的视频页');
 }
 
 export async function getVideoCaptions({ videoId, fetchImpl = fetch, usePoToken = fetchImpl === fetch } = {}) {
@@ -580,19 +625,11 @@ export async function getVideoCaptions({ videoId, fetchImpl = fetch, usePoToken 
   const cached = cacheGet(captionCache, cacheKey, CAPTION_TTL);
   if (cached) return { ...cached, cached: true };
 
-  let html;
+  let player;
   try {
-    html = await fetchText(`${YOUTUBE}/watch?v=${videoId}&hl=en&gl=US&persist_hl=1`, {
-      timeoutMs: 15_000,
-      fetchImpl,
-    });
+    player = await fetchWatchPlayer(videoId, fetchImpl);
   } catch (error) {
     throw new HttpError(502, `无法打开 YouTube 视频页：${error.message}`, 'YOUTUBE_PAGE_FAILED');
-  }
-
-  const player = playerFromHtml(html);
-  if (!player) {
-    throw new HttpError(502, 'YouTube 返回了无法识别的视频页（可能需要登录或同意 Cookie）。', 'YOUTUBE_PAGE_FAILED');
   }
 
   const details = player.videoDetails || {};
@@ -688,7 +725,7 @@ export async function getVideoCaptions({ videoId, fetchImpl = fetch, usePoToken 
 
   if (!cues.length) {
     meta.reason = reason || 'NO_CAPTIONS';
-    cacheSet(captionCache, cacheKey, meta);
+    // LOGIN_REQUIRED / CAPTION_FETCH_FAILED 是瞬时的，不能缓存成 10 分钟的空字幕。
     return meta;
   }
 
@@ -754,6 +791,58 @@ export async function translateCues({ videoId, cues = [], config, fetchImpl = fe
 
   cacheSet(translateCache, key, { zh });
   return { zh, cached: false, batches: batches.length };
+}
+
+/**
+ * Free fallback when the user has not configured a chat provider.
+ * Google Translate is batched with numbered sentinels so each translation can
+ * be mapped back to its cue; no key is required.
+ */
+export async function translateCuesFree({ videoId = '', cues = [], fetchImpl = fetch } = {}) {
+  const lines = cues
+    .map((cue) => String(cue?.en || cue?.text || '').replace(/\s+/g, ' ').trim().slice(0, 400))
+    .filter(Boolean)
+    .slice(0, 250);
+  if (!lines.length) throw new HttpError(400, '没有需要翻译的字幕。', 'BAD_CUES');
+
+  const key = `free:${videoId}:${hash(lines.join('|'))}`;
+  const cached = cacheGet(translateCache, key, TRANSLATE_TTL);
+  if (cached) return { zh: cached.zh, cached: true, batches: 0, engine: 'google' };
+
+  const batches = chunk(lines, 20);
+  const zh = [];
+  for (const batch of batches) {
+    const query = batch.map((line, index) => `[[${index + 1}]] ${line}`).join('\n');
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${encodeURIComponent(query)}`;
+    let payload;
+    try {
+      const response = await fetchImpl(url, {
+        headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      payload = await response.json();
+    } catch (error) {
+      throw new HttpError(502, `自动翻译暂时不可用：${error.message}`, 'FREE_TRANSLATE_FAILED');
+    }
+
+    const text = (Array.isArray(payload?.[0]) ? payload[0] : [])
+      .map((segment) => (Array.isArray(segment) ? segment[0] : ''))
+      .join('');
+    const translated = Array.from({ length: batch.length }, () => '');
+    const pattern = /\[\[(\d+)\]\]\s*([\s\S]*?)(?=\n?\[\[\d+\]\]|$)/g;
+    let match;
+    while ((match = pattern.exec(text))) {
+      const index = Number(match[1]) - 1;
+      if (index >= 0 && index < translated.length) {
+        translated[index] = match[2].replace(/\s+/g, ' ').trim();
+      }
+    }
+    for (const line of translated) zh.push(String(line || '').slice(0, 300));
+  }
+
+  cacheSet(translateCache, key, { zh });
+  return { zh, cached: false, batches: batches.length, engine: 'google' };
 }
 
 export function _clearCaches() {

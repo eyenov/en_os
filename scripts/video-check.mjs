@@ -213,7 +213,7 @@ async function main() {
         activeWordText: document.querySelector('.word.active')?.textContent || '',
         activeZhChars: document.querySelectorAll('.zh-char.active').length,
         enCues: document.querySelectorAll('#sub-en .cue').length,
-        zhCues: document.querySelectorAll('#sub-zh .cue').length,
+        zhCues: document.querySelectorAll('#sub-en .cue .zh-text').length,
         title: document.querySelector('.watch-head h1')?.textContent,
         scrollWidth: document.documentElement.scrollWidth,
         innerWidth: window.innerWidth,
