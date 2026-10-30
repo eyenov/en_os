@@ -3,6 +3,11 @@ node_modules/
 .chrome-profile/
 .chrome-profile-audit/
 .chrome-report-audit/
+.chrome-video-profile/
 *.log
 .DS_Store
 Thumbs.db
+.chrome-*/
+
+proxy.config.json
+

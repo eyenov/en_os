@@ -51,7 +51,7 @@ function cleanEnglish(value) {
     .trim();
   if (!text) return '';
   if (CJK_RE.test(text)) return '';
-  if (!/[A-Za-z]{3,}/.test(text)) return '';
+  if (!/[A-Za-z]{2,}/.test(text)) return '';
   if (text.length > 240) text = text.slice(0, 240).trim();
   return text;
 }
@@ -163,7 +163,7 @@ export function parseDialogue(raw, { topic = '', band = 6, source = 'ai' } = {})
     if (!entry || typeof entry !== 'object') return;
     const text = cleanEnglish(entry.text ?? entry.en ?? entry.sentence);
     const zh = String(entry.zh ?? entry.translation ?? entry.chinese ?? '').trim().slice(0, 240);
-    if (!text || countWords(text) < 3) return;
+    if (!text || countWords(text) < 1) return;
     if (!CJK_RE.test(zh)) return;
     const rawSpeaker = String(entry.speaker ?? entry.role ?? '').trim();
     const speaker = /^b/i.test(rawSpeaker) ? 'B' : /^a/i.test(rawSpeaker) ? 'A' : (index % 2 ? 'B' : 'A');
@@ -194,19 +194,23 @@ export function parseDialogue(raw, { topic = '', band = 6, source = 'ai' } = {})
 export function buildDialoguePrompt(topic, { band = 6 } = {}) {
   const system = [
     'You are an IELTS listening coach for lower-intermediate learners (Band 5.0-6.0).',
-    'Write ONE natural two-person dialogue in English that is STRICTLY about the user topic, 10-12 turns, 200-280 words in total.',
-    'The first turn must name the topic explicitly in natural English, so the learner can hear what the conversation is about.',
-    'If the input is a question, answer that question through the dialogue and keep every turn relevant to it.',
-    'Do not change the topic and do not invent a setting, location, time of day, or extra characters that the topic does not require.',
-    'Keep the situation neutral and everyday unless the topic itself is about a specific place or time.',
-    'Do not add opinions, advice, moral judgements, or facts that are not needed to discuss the topic; let the two speakers reason from the topic itself.',
-    'Each turn must be exactly ONE sentence of 10-20 words, with common vocabulary and clear punctuation.',
-    'Alternate speakers A and B, starting with A.',
+    'Write ONE natural two-person conversation in English that is STRICTLY about the user topic or question, 10-12 turns, 200-280 words in total.',
+    'Make it sound like real speech, not a textbook:',
+    '- Give the two speakers simple roles that fit the topic (a customer and a barista, two coworkers, two friends), and let those roles shape how they speak.',
+    '- Give them a clear reason to talk that comes directly from the topic: asking for information, making a plan, solving a small problem, comparing experiences.',
+    '- Each turn should respond to the previous one: a follow-up question, a short reaction ("Really?", "That makes sense."), a check, or a concrete detail.',
+    '- Use contractions and common spoken markers (I\'m, it\'s, don\'t, well, actually, maybe). Keep the grammar correct.',
+    '- Vary the length: some turns are short reactions of 2-8 words, others are 10-20 words. A turn can be a question, a fragment, or one or two short sentences.',
+    '- Start in the middle of a real situation and make the topic clear from the first turn, but never open with "Today we are talking about ...".',
+    'If the input is a question, explore and answer it through the conversation.',
+    'Stay on the topic:',
+    '- Do not change the topic or import a setting, time of day, or characters that the topic does not imply. If the topic implies a place (a café, a station), use it naturally and briefly.',
+    '- The speakers may agree, disagree, or share a small preference about the topic. Do not add unrelated advice, moral judgements, or background facts.',
     'For every turn provide:',
     '- zh: a faithful Simplified Chinese translation;',
     '- structure: one short Chinese sentence explaining the grammar of the whole turn;',
-    '- chunks: 2-4 consecutive pieces that together cover the whole sentence exactly (copy the substrings, including punctuation), each with text and role. role must be one of: 主语, 谓语, 宾语, 表语, 定语, 状语, 补语, 从句, 连接词, 意群;',
-    '- words: 2-3 key words OR short collocations from the sentence, each with term, pos, zh (Chinese meaning), gloss (English definition, at most 14 words) and usage (English note on meaning in this sentence or when to use it, at most 16 words);',
+    '- chunks: 1-4 consecutive pieces that together cover the whole turn exactly (copy the substrings, including punctuation), each with text and role. role must be one of: 主语, 谓语, 宾语, 表语, 定语, 状语, 补语, 从句, 连接词, 意群. A very short turn can be one chunk;',
+    '- words: 1-3 key words OR short collocations from the turn, each with term, pos, zh (Chinese meaning), gloss (English definition, at most 14 words) and usage (English note on meaning in this turn or when to use it, at most 16 words);',
     '- grammar: one short Chinese grammar note.',
     'Use Simplified Chinese only in zh, structure and grammar fields. English only in text, gloss and usage.',
     'Return ONLY valid JSON in this shape:',

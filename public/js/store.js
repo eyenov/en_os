@@ -43,6 +43,7 @@ export const DEFAULT_SETTINGS = {
   band: 6.5,
   name: '',
   lookup: true,
+  youtubeKey: '',
 };
 
 let settingsCache = null;

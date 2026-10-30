@@ -178,6 +178,48 @@ export async function lookupWord(word, { settings = getSettings() } = {}) {
   return response.json();
 }
 
+export function youtubeKeyFor(settings = getSettings()) {
+  return String(settings.youtubeKey || '').trim();
+}
+
+export function youtubeHasEnvKey() {
+  return Boolean(healthCache?.youtube?.hasEnvKey);
+}
+
+export async function searchVideos(query, { settings = getSettings(), maxResults = 24 } = {}) {
+  const response = await fetch('/api/youtube/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ query, maxResults, youtubeKey: youtubeKeyFor(settings) }),
+  });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}
+
+export async function fetchVideoCaptions(videoId) {
+  const response = await fetch('/api/youtube/captions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ videoId }),
+  });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}
+
+export async function translateVideoCaptions(videoId, cues, { settings = getSettings() } = {}) {
+  const config = configFor(settings);
+  if (!config.apiKey && !providerHasEnvKey(config.provider)) {
+    throw new ApiError('还没有配置 API Key，无法生成中文字幕。', 'NO_KEY', 401);
+  }
+  const response = await fetch('/api/youtube/translate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ ...config, videoId, cues: cues.map((cue) => ({ en: cue.en || cue.text || '' })) }),
+  });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}
+
 export async function testConnection(settings = getSettings()) {
   const started = performance.now();
   const data = await chat({

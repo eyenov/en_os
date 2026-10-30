@@ -22,6 +22,7 @@ import {
   recognitionSupported,
   resumeSpeaking,
   speak,
+  speakWords,
   stopSpeaking,
   ttsSupported,
 } from '../speech.js';
@@ -94,6 +95,7 @@ export async function renderListening(ctx) {
   let topicListener = null;
   let playTimer = null;
   let clockId = null;
+  let wordByWord = true;
 
   if (dialogue) {
     current = Math.max(0, Math.min(dialogue.lines.length - 1, current));
@@ -180,11 +182,17 @@ export async function renderListening(ctx) {
   const autoLabel = h('label', { class: 'check-inline auto-label' },
     h('input', { type: 'checkbox', onchange: (event) => { autoAdvance = event.target.checked; } }),
     '自动连播');
+  const wordModeBtn = h('button', {
+    class: 'btn btn-ghost btn-sm',
+    type: 'button',
+    title: '逐词朗读：每个词单独发音，高亮与声音严格同步；关闭则整句自然朗读',
+    onclick: toggleWordMode,
+  }, '逐词');
   const finishBtn = h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: finish }, '生成练习结果');
 
   const player = h('div', { class: 'listen-player' },
     prevBtn, playBtn, nextBtn, position,
-    rateBtn, randomBtn, revealBtn, autoLabel,
+    rateBtn, randomBtn, revealBtn, wordModeBtn, autoLabel,
     h('span', { class: 'spacer' }),
     finishBtn);
 
@@ -321,6 +329,10 @@ export async function renderListening(ctx) {
     rateBtn.setAttribute('aria-pressed', rateMode === 'slow' ? 'true' : 'false');
     revealBtn.classList.toggle('hidden', phase !== 'blind');
     revealBtn.textContent = reveal ? '隐藏文本' : '显示文本';
+    wordModeBtn.classList.toggle('hidden', phase === 'blind');
+    wordModeBtn.classList.toggle('active', wordByWord);
+    wordModeBtn.setAttribute('aria-pressed', wordByWord ? 'true' : 'false');
+    wordModeBtn.textContent = wordByWord ? '逐词' : '整句';
     autoLabel.classList.toggle('hidden', phase !== 'slow');
     finishBtn.disabled = phase === 'result';
   }
@@ -340,22 +352,46 @@ export async function renderListening(ctx) {
     return normalised || '意群';
   }
 
+  /** Wrap words in spans carrying their absolute offset, for karaoke highlighting. */
+  function renderWords(text, baseOffset = 0) {
+    const nodes = [];
+    const pattern = /[A-Za-z0-9][A-Za-z0-9'’-]*/g;
+    let last = 0;
+    let match;
+    while ((match = pattern.exec(text))) {
+      if (match.index > last) nodes.push(text.slice(last, match.index));
+      const start = baseOffset + match.index;
+      nodes.push(h('span', {
+        class: 'wd',
+        'data-w-start': String(start),
+        'data-w-end': String(start + match[0].length),
+      }, match[0]));
+      last = match.index + match[0].length;
+    }
+    if (last < text.length) nodes.push(text.slice(last));
+    return nodes;
+  }
+
   function annotatedSentence(line, big = false) {
     const chunks = resolveChunks(line.text, line.chunks);
+    let cursor = 0;
     return h('div', { class: `syn-sentence${big ? ' big' : ''}` },
       chunks.map((chunk) => {
         const style = roleStyle(chunk.role);
+        const found = line.text.indexOf(chunk.text, cursor);
+        const start = found >= 0 ? found : cursor;
+        cursor = start + chunk.text.length;
         return h('span', {
           class: 'syn-chunk',
           style: `--syn:${style.color};--syn-soft:${style.soft}`,
         },
-        h('span', { class: 'syn-text' }, chunk.text),
+        h('span', { class: 'syn-text' }, renderWords(chunk.text, start)),
         h('span', { class: 'syn-label' }, roleLabel(chunk.role)));
       }));
   }
 
   function sentenceView(line, { open = false, big = false } = {}) {
-    if (!open) return h('p', { class: `ll-en${big ? ' big' : ''}` }, line.text);
+    if (!open) return h('p', { class: `ll-en${big ? ' big' : ''}` }, renderWords(line.text, 0));
     return annotatedSentence(line, big);
   }
 
@@ -417,6 +453,7 @@ export async function renderListening(ctx) {
     else if (phase === 'blind') stage.replaceChildren(renderBlind());
     else if (phase === 'intensive') stage.replaceChildren(renderIntensive());
     else stage.replaceChildren();
+    if (playing) markSpeakingLine();
   }
 
   function renderPreview() {
@@ -610,11 +647,82 @@ export async function renderListening(ctx) {
     playTimer = null;
   }
 
+  function clearWordHighlight() {
+    for (const node of stage.querySelectorAll('.wd.is-speaking')) {
+      node.classList.remove('is-speaking');
+    }
+    for (const node of stage.querySelectorAll('.wd.is-read')) {
+      node.classList.remove('is-read');
+    }
+    for (const node of stage.querySelectorAll('.listen-line.speaking')) {
+      node.classList.remove('speaking');
+    }
+  }
+
+  function markSpeakingLine() {
+    const lineEl = stage.querySelector('.listen-line.active');
+    lineEl?.classList.add('speaking');
+  }
+
+  function highlightWord(charIndex) {
+    const lineEl = stage.querySelector('.listen-line.active');
+    if (!lineEl) return;
+    const words = lineEl.querySelectorAll('.wd');
+    let target = null;
+    for (const word of words) {
+      const end = Number(word.getAttribute('data-w-end'));
+      if (charIndex >= end) {
+        word.classList.add('is-read');
+        word.classList.remove('is-speaking');
+      } else {
+        word.classList.remove('is-read');
+        if (!target) target = word;
+      }
+    }
+    if (!target) return;
+    const previous = lineEl.querySelector('.wd.is-speaking');
+    if (previous === target) return;
+    previous?.classList.remove('is-speaking');
+    target.classList.add('is-speaking');
+  }
+
+  function scrollActiveLine() {
+    requestAnimationFrame(() => {
+      const lineEl = stage.querySelector('.listen-line.active');
+      if (!lineEl) return;
+      const rect = lineEl.getBoundingClientRect();
+      if (rect.top < 80 || rect.bottom > window.innerHeight - 90) {
+        lineEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
+    });
+  }
+
+  function highlightWordIndex(index) {
+    const lineEl = stage.querySelector('.listen-line.active');
+    if (!lineEl) return;
+    const words = lineEl.querySelectorAll('.wd');
+    words.forEach((word, wordIndex) => {
+      word.classList.toggle('is-read', wordIndex < index);
+      word.classList.toggle('is-speaking', wordIndex === index);
+    });
+  }
+
+  function toggleWordMode() {
+    wordByWord = !wordByWord;
+    paintPlayer();
+    if (playing) {
+      playIndex(current, { mode: rateMode });
+      return;
+    }
+    toast(wordByWord
+      ? '逐词模式：每个词单独发音，高亮与声音严格同步。'
+      : '整句模式：自然朗读，逐词同步依赖语音引擎的边界事件。', 'info', 3200);
+  }
+
   function playIndex(index, { mode = rateMode, open = false } = {}) {
     if (!dialogue) return;
     if (!ttsSupported) return toast('当前浏览器不支持语音朗读，可先阅读文本。', 'err');
     clearPlayTimer();
-    stopSpeaking();
     current = clampIndex(index);
     if (open && phase === 'slow') openStructures.add(current);
     rateMode = mode === 'slow' ? 'slow' : 'normal';
@@ -625,18 +733,36 @@ export async function renderListening(ctx) {
     else if (phase !== 'blind') stats.normalPlays += 1;
     persist();
     paintStage();
+    markSpeakingLine();
     paintPlayer();
     paintClock();
+    scrollActiveLine();
     const line = dialogue.lines[current];
+    const rate = rateMode === 'slow' ? 0.68 : 0.95;
+
+    if (wordByWord && phase !== 'blind') {
+      // Exact mode: one utterance per word, highlight on each utterance start.
+      const tokens = [...line.text.matchAll(/[A-Za-z0-9][A-Za-z0-9'’-]*[,.!?;:]*/g)].map((match) => match[0]);
+      speakWords(tokens, {
+        rate,
+        lang: 'en-GB',
+        onWord: highlightWordIndex,
+        onEnd: handleLineEnd,
+      });
+      return;
+    }
+
     speak(line.text, {
-      rate: rateMode === 'slow' ? 0.68 : 0.95,
+      rate,
       lang: 'en-GB',
+      onBoundary: ({ charIndex }) => highlightWord(charIndex),
       onEnd: handleLineEnd,
     });
   }
 
   function handleLineEnd() {
     playing = false;
+    clearWordHighlight();
     if (!mounted) return;
     if (phase === 'blind') {
       if (current < dialogue.lines.length - 1) {
@@ -712,6 +838,7 @@ export async function renderListening(ctx) {
   function stopPlayback() {
     clearPlayTimer();
     stopSpeaking();
+    clearWordHighlight();
     playing = false;
     paused = false;
     paintPlayer();
@@ -721,6 +848,7 @@ export async function renderListening(ctx) {
     if (!dialogue) return;
     clearPlayTimer();
     stopSpeaking();
+    clearWordHighlight();
     playing = false;
     paused = false;
     phase = next;
@@ -953,6 +1081,7 @@ export async function renderListening(ctx) {
     if (!dialogue) return;
     clearPlayTimer();
     stopSpeaking();
+    clearWordHighlight();
     playing = false;
     paused = false;
     stopClock();

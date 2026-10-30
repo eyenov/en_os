@@ -89,6 +89,22 @@ before(async () => {
       res.write('data: [DONE]\n\n');
       return res.end();
     }
+    if (system.includes('translate English YouTube subtitles')) {
+      const user = body.messages?.at(-1)?.content || '';
+      let lines = [];
+      try { lines = JSON.parse(user).lines || []; } catch { lines = []; }
+      return json(res, 200, {
+        model: 'mock-model',
+        choices: [{
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: JSON.stringify({ translations: lines.map((line, index) => `中文${index + 1}：${String(line).slice(0, 14)}`) }),
+          },
+          finish_reason: 'stop',
+        }],
+      });
+    }
     const content = system.includes('short English web search query')
       ? 'urban shade'
       : system.includes('short IELTS reading passages')
@@ -338,4 +354,39 @@ test('unknown API route returns JSON 404', async () => {
   const response = await fetch(`${BASE}/api/nope`);
   assert.equal(response.status, 404);
   assert.equal((await response.json()).error.code, 'NOT_FOUND');
+});
+
+test('video pages are served and YouTube routes validate input', async () => {
+  const videos = await fetch(`${BASE}/videos.html`);
+  assert.equal(videos.status, 200);
+  assert.match(await videos.text(), /video-search/);
+  assert.match(videos.headers.get('content-security-policy') || '', /frame-src https:\/\/www\.youtube\.com/);
+
+  const watch = await fetch(`${BASE}/watch.html`);
+  assert.equal(watch.status, 200);
+  assert.match(await watch.text(), /subtitle-columns/);
+
+  const badId = await post('/api/youtube/captions', { videoId: 'bad' });
+  assert.equal(badId.status, 400);
+  assert.equal((await badId.json()).error.code, 'BAD_VIDEO_ID');
+
+  const noKey = await post('/api/youtube/translate', {
+    videoId: 'abc12345678',
+    cues: [{ en: 'Hello' }],
+  });
+  assert.equal(noKey.status, 401);
+  assert.equal((await noKey.json()).error.code, 'NO_KEY');
+});
+
+test('YouTube caption translation batches through the chat provider', async () => {
+  const response = await post('/api/youtube/translate', {
+    provider: 'custom', apiKey: 'sk-test', baseUrl: MOCK, model: 'mock',
+    videoId: 'abc12345678',
+    cues: [{ en: 'Hello' }, { en: 'World' }],
+  });
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.equal(data.zh.length, 2);
+  assert.match(data.zh[0], /中文1/);
+  assert.equal(data.batches, 1);
 });

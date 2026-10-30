@@ -1,11 +1,11 @@
-import { getHealth, getProviders, providerHasEnvKey, testConnection } from '../api.js';
-import { clearAllData, getSettings, listSessions, resetSettings, saveSettings } from '../store.js';
+import { getHealth, getProviders, providerHasEnvKey, testConnection } from '../api.js';import { clearAllData, getSettings, listSessions, resetSettings, saveSettings } from '../store.js';
 import { h, icon, modal, toast } from '../ui.js';
 
 export async function renderSettings(ctx) {
   const providers = getProviders();
   let activeId = getSettings().provider;
   let keyVisible = false;
+  let youtubeVisible = false;
   let testing = false;
   const draft = {
     keys: { ...getSettings().keys },
@@ -196,6 +196,35 @@ export async function renderSettings(ctx) {
   }
 
   const sessions = listSessions();
+  const youtubeKeyInput = h('input', {
+    class: 'input',
+    type: youtubeVisible ? 'text' : 'password',
+    value: getSettings().youtubeKey || '',
+    placeholder: 'AIza…（可选；留空则尝试网页检索）',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    oninput: (event) => saveSettings({ youtubeKey: event.target.value.trim() }),
+  });
+  const youtubeCard = h('div', { class: 'card settings-card' },
+    h('h3', {}, h('span', { html: icon('play', 18) }), 'YouTube 视频搜索'),
+    h('p', { class: 'small muted', style: 'margin-top:6px' }, '关键词搜索、缩略图与逐词双语字幕。配置 Data API v3 Key 后结果更稳定；不配置时会尝试公开搜索结果页。'),
+    h('div', { class: 'field', style: 'margin-top:14px' },
+      h('label', {}, 'YouTube Data API Key ', h('span', { class: 'badge' }, '仅用于视频搜索')),
+      h('div', { class: 'key-row' }, youtubeKeyInput,
+        h('button', { class: 'icon-round', type: 'button', 'aria-label': youtubeVisible ? '隐藏密钥' : '显示密钥', onclick: () => {
+          youtubeVisible = !youtubeVisible;
+          youtubeKeyInput.type = youtubeVisible ? 'text' : 'password';
+        } }, h('span', { html: icon(youtubeVisible ? 'lock' : 'key', 17) })),
+      ),
+      h('div', { class: 'hint' }, '也可以给服务端设置 YOUTUBE_API_KEY 环境变量。Key 只保存在本机，不写入日志。'),
+    ),
+    h('div', { class: 'callout', style: 'margin-top:4px', html: `${icon('info', 16)}<span>逐词字幕来自 YouTube 的公开字幕轨。并非所有视频都有字幕；没有字幕的视频仍可播放，但不会显示高亮。没有官方中文字幕时，可用当前 AI 服务商生成。</span>` }),
+    h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:12px' },
+      h('a', { class: 'link-btn', href: 'https://console.cloud.google.com/apis/library/youtube.googleapis.com', target: '_blank', rel: 'noreferrer' }, '申请 YouTube Data API Key ↗'),
+      h('a', { class: 'link-btn', href: '/videos.html' }, '打开视频检索 →'),
+    ),
+  );
+
   const dataCard = h('div', { class: 'card settings-card' },
     h('h3', {}, h('span', { html: icon('trash', 18) }), '本机数据'),
     h('p', { class: 'small muted', style: 'margin-top:6px' }, `已保存 ${sessions.length} 份学习报告。清空后不可恢复。`),
@@ -245,6 +274,7 @@ export async function renderSettings(ctx) {
           tabs,
           panel,
         ),
+        youtubeCard,
         dataCard,
       ),
       h('div', {},

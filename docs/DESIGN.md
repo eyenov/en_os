@@ -189,7 +189,8 @@ native ──fail──▶ Wikipedia ──fail──▶ DuckDuckGo
 ```
 
 - 10–12 句、每句一句、总 200–280 词；
-- 生成提示词只包含用户话题与目标 Band，**不注入首页场景**；首句必须点明话题，并禁止新增无关地点、时间、人物或主观评价；
+- 生成提示词只包含用户话题与目标 Band，**不注入首页场景**；首句自然点明话题，并禁止新增无关地点、时间、人物或主观评价；
+- 对话按真实交流写：说话人有符合话题的角色，有追问、短反应与缩写；短句（如 "Really?"）允许 1 个词，单轮也可包含一到两句短句；
 - `parseDialogue` 校验：8–14 句、正文必须是英文、`zh` 必须含中文，不合格的行直接丢弃；
 - `chunks` 是 2–4 段连续原文，角色限定在 主语 / 谓语 / 宾语 / 表语 / 定语 / 状语 / 补语 / 从句 / 连接词 / 意群；模型给的片段不是原句子串时，`resolveChunks()` 回退到逗号切分的意群，保证不吞标点；
 - `words` 支持单词、词组与搭配，`gloss` 是英文语义，`usage` 是英文使用场景 / 搭配，`zh` 是中文；
@@ -208,7 +209,8 @@ native ──fail──▶ Wikipedia ──fail──▶ DuckDuckGo
 
 ### 播放模型
 
-- 句子是播放单位（生成时要求一句一行），`speechSynthesis` 的 `rate` 为 0.68 / 0.95；
+- 每个对话轮次是一条播放单位（生成时允许一轮 1–2 个短句），`speechSynthesis` 的 `rate` 为 0.68 / 0.95；不强制指定 `voice`，使用浏览器默认英文音色，避免某些 SAPI / 在线音色被选中后无声；
+- **词级同步**：默认 **逐词模式** —— `speakWords()` 把每个词作为独立 utterance 入队，`onstart` 一响就高亮对应词，因此高亮与声音严格同步，代价是发音被切成单词。播放器可切换「整句」：整句自然朗读，只使用 `boundary` 事件做词级同步，且只认 `name=word` 的边界；句级/无边界时只保留整句高亮，不估算、不猜词。`cancel()` 后强制 `resume()`，避免 Chrome 暂停状态导致下一次无声。
 - 盲听自动连播，句间停顿 420ms；
 - 状态（对话、阶段、当前句、统计）存在 `enos.listening.current.v1`，结果存在 `enos.listening.sessions.v1`（最多 8 份）。
 
@@ -295,3 +297,70 @@ native ──fail──▶ Wikipedia ──fail──▶ DuckDuckGo
 - 新词表：替换 `data/core100.json`，保持字段约定即可；
 - 新服务商：在 `server/providers.mjs` 注册，补 `search` 策略；
 - 官方评分对齐：替换 `scoring.js` 的 `scoreWriting` 与 `engine.js` 的 rubric。
+
+---
+
+## 15. 视频精听管线
+
+```
+关键词 ─▶ /api/youtube/search ─┬─ Data API v3（有 Key）
+                               └─ 公开结果页 ytInitialData（无 Key）
+                                        │
+/videos.html  ◀── items（缩略图/标题/频道/时长/CC） ─┘
+     │ 点击
+     ▼
+/watch.html?v=ID
+     ├─ 浏览器 iframe API ──▶ YouTube 播放器（getCurrentTime 每 90ms）
+     └─ /api/youtube/captions
+             ├─ watch 页 ytInitialPlayerResponse.captionTracks
+             ├─ timedtext JSON3（英文）
+             ├─ timedtext tlang=zh-Hans（官方中文）
+             └─ AI 逐句翻译（官方中文为空时）
+```
+
+### 15.1 搜索
+
+- API 模式：`search.list` + `videos.list`（时长、播放量），`videoEmbeddable=true` 减少不可嵌入结果；
+- 网页模式：从 `ytInitialData` 递归收集 `videoRenderer`，并兼容新的 `lockupViewModel`（`contentId` + `lockupMetadataViewModel` + `thumbnailViewModel`）；
+- 两个模式都按 `videoId` 去重；API 失败会降级网页并在结果顶部显示 warning，而不是直接失败；
+- 结果缓存 3 分钟，字幕缓存 10 分钟。
+
+### 15.2 字幕与词级时间
+
+`timedtext?fmt=json3` 的 `events[].segs[]`：
+
+- 自动字幕通常带 `segs[].tOffsetMs`，直接换算成绝对起点；词尾取下一个 seg 的起点或事件结束；
+- 人工字幕没有 offset，按词长权重把整句时间分给每个词（每个词至少 60ms）；
+- 事件先保留原始时间，再 `mergeCues` 合并为 ≤92 字符、≤8 秒的可读行，合并时把词数组拼接起来，所以高亮仍是词级；
+- 中文轨道同样解析、合并，再按时间重叠对齐到英文行；没有重叠时取 2.5 秒内最近的一句。
+
+2026 年起 YouTube 对 `timedtext` 强制 PoToken：没有 token 时返回空 `200`。因此直接解析为空时会调用可选依赖 `get-youtube-transcript`，由 BotGuard 铸造视频绑定的 token，再以 `&pot=...&c=WEB` 重新请求。该工具返回句级 segment，`segmentsToCues()` 再按词长把每句时间分给单词；没有安装依赖或 token 铸造失败时显示明确原因，而不是空白字幕。
+
+### 15.3 播放同步
+
+- 不使用定时器估算播放位置，而是轮询 `player.getCurrentTime()`；
+- 只在 `activeCue` 改变时做 DOM 大改（切换行、滚动、缓存当前行的词与字节点）；同一个 cue 内只切换当前词与中文字符数；
+- 中文字符高亮按句内进度：`ceil(字数 × progress)`，避免中文没有空格时无法逐词；
+- 点击行跳到行首，点击单词跳到词首；自动滚动可以关闭；字幕窗口独立滚动，不影响页面。
+
+### 15.4 翻译
+
+优先使用 YouTube 官方 `tlang=zh-Hans`（零成本、时间对齐好）。为空时：
+
+- 前端按 200 句分块调用 `/api/youtube/translate`；
+- 服务端用当前 chat 服务商，每 25 句一批，要求返回等长 JSON 数组；
+- 校验条数，不符就报错让用户重试；结果缓存 30 分钟，避免重复计费。
+
+### 15.5 安全与降级
+
+- 只允许固定 YouTube 域名与 11 位 `videoId`，不接受用户传入任意抓取地址；
+- 播放器脚本 / iframe 通过 CSP `script-src` / `frame-src` 白名单放行；缩略图放行 `i.ytimg.com`；
+- 视频不可嵌入、没有字幕、字幕接口为空、翻译失败都有独立提示，不阻塞播放器；
+- 服务端拿不到字幕时，浏览器仍可直接播放 iframe，只是没有高亮；
+- 需要代理时由 `server/start.mjs` 把 `YOUTUBE_PROXY` / `HTTPS_PROXY` 转为 Node 24 的 `NODE_USE_ENV_PROXY=1`，让服务端搜索、BotGuard、字幕请求走同一出口；浏览器自身的 iframe 与缩略图仍由浏览器代理设置决定。
+
+### 15.6 测试
+
+- `tests/youtube.test.mjs` 覆盖两种搜索结果结构、JSON3 词级时间、无 offset 的均分、合并、官方中文对齐；
+- `scripts/video-check.mjs` 用 CDP 注入 fixture，验证两列字幕、当前词/中文字符高亮、无横向溢出，并生成截图；
+- 真实网络下通过本机代理验证了搜索、PoToken 字幕与播放器错误码；代理出口被 YouTube 标记时返回 `LOGIN_REQUIRED`，页面给出可操作提示。

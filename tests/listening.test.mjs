@@ -10,7 +10,7 @@ import {
   parseDialogue,
   resolveChunks,
 } from '../public/js/dialogue.js';
-import { parseListeningCommand } from '../public/js/speech.js';
+import { parseListeningCommand, speechChunks } from '../public/js/speech.js';
 
 function modelLine(index) {
   return {
@@ -113,6 +113,36 @@ test('parseDialogue accepts valid model output and normalises fields', () => {
   assert.ok(dialogue.id.startsWith('lst-'));
 });
 
+test('parseDialogue accepts realistic short reactions and multi-sentence turns', () => {
+  const payload = modelPayload(10);
+  payload.lines[0] = {
+    ...modelLine(0),
+    text: 'Really?',
+    structure: '省略句，表示惊讶或追问。',
+    chunks: [{ text: 'Really?', role: '意群' }],
+    words: [{
+      term: 'really',
+      pos: 'adv.',
+      zh: '真的吗',
+      gloss: 'used to show surprise or interest',
+      usage: 'a one-word reaction in conversation',
+    }],
+  };
+  payload.lines[1] = {
+    ...modelLine(1),
+    text: "That makes sense. Let's try it.",
+    chunks: [
+      { text: 'That makes sense.', role: '主句' },
+      { text: "Let's try it.", role: '主句' },
+    ],
+  };
+  const dialogue = parseDialogue(payload, { topic: 'test' });
+  assert.ok(dialogue);
+  assert.equal(dialogue.lines.length, 10);
+  assert.equal(dialogue.lines[0].text, 'Really?');
+  assert.equal(dialogue.lines[1].text, "That makes sense. Let's try it.");
+});
+
 test('parseDialogue rejects incomplete or non-English output', () => {
   assert.equal(parseDialogue(JSON.stringify(modelPayload(7))), null);
   assert.equal(parseDialogue('not json'), null);
@@ -132,8 +162,10 @@ test('dialogue prompt asks for annotation JSON and anchors the topic', () => {
   assert.match(prompt.user, /5\.5/);
   assert.doesNotMatch(prompt.user, /Scene flavour|lab|night/i);
   assert.match(prompt.system, /STRICTLY about the user topic/);
-  assert.match(prompt.system, /first turn must name the topic/);
+  assert.match(prompt.system, /Make it sound like real speech/);
+  assert.match(prompt.system, /make the topic clear from the first turn/);
   assert.match(prompt.system, /Do not change the topic/);
+  assert.match(prompt.system, /short reactions/);
   assert.match(prompt.system, /"lines"/);
   assert.match(prompt.system, /translation/);
   assert.match(prompt.system, /JSON/);
@@ -151,6 +183,16 @@ test('result text contains transcript and side-by-side translation', () => {
   assert.match(result.translation, /^01\. 你好/);
   assert.match(result.bilingual, /你好，你准备好我们的会议了吗？/);
   assert.equal(result.transcript.split('\n').length, 12);
+});
+
+test('speech chunks keep offsets for word highlighting', () => {
+  const chunks = speechChunks('Really? That sounds useful.');
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0].text, 'Really?');
+  assert.equal(chunks[0].start, 0);
+  assert.equal(chunks[1].text, 'That sounds useful.');
+  assert.equal(chunks[1].start, 8);
+  assert.deepEqual(speechChunks('  '), []);
 });
 
 test('listening voice commands cover playback, position and phases', () => {

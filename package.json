@@ -5,16 +5,20 @@
   "type": "module",
   "description": "EnOS · 一句英文走完雅思四项。本地优先的雅思语境学习 Web 应用。",
   "scripts": {
-    "start": "node server/server.mjs",
+    "start": "node server/start.mjs",
     "dev": "node --watch server/server.mjs",
     "test": "node --test",
     "validate": "node scripts/validate-data.mjs",
     "smoke": "node scripts/browser-check.mjs",
+    "smoke:video": "node scripts/video-check.mjs",
     "mock": "node scripts/mock-provider.mjs",
     "audit": "node scripts/overflow-check.mjs"
   },
   "engines": {
     "node": ">=20.11"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "get-youtube-transcript": "^1.0.0"
+  }
 }

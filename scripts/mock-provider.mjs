@@ -102,6 +102,14 @@ const server = http.createServer(async (req, res) => {
     return reply(res, JSON.stringify(template));
   }
 
+  if (system.includes('translate English YouTube subtitles')) {
+    let lines = [];
+    try { lines = JSON.parse(user).lines || []; } catch { lines = []; }
+    return reply(res, JSON.stringify({
+      translations: lines.map((line, index) => `中文${index + 1}：${String(line).slice(0, 14)}`),
+    }));
+  }
+
   if (system.includes('IELTS writing examiner')) {
     return reply(res, JSON.stringify({
       band: 7.5,

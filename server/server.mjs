@@ -17,6 +17,7 @@ import {
 } from './providers.mjs';
 import { searchWeb } from './search.mjs';
 import { extractFromUrl } from './extract.mjs';
+import { getVideoCaptions, searchYouTube, translateCues } from './youtube.mjs';
 
 const ROOT = path.dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -44,16 +45,17 @@ const MIME = {
 
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
-  'Referrer-Policy': 'no-referrer',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
   'X-Frame-Options': 'DENY',
   'Content-Security-Policy': [
     "default-src 'self'",
-    "img-src 'self' data: blob:",
+    "img-src 'self' data: blob: https://i.ytimg.com https://img.youtube.com",
     "style-src 'self' 'unsafe-inline'",
-    "script-src 'self'",
+    "script-src 'self' https://www.youtube.com https://s.ytimg.com",
     "connect-src 'self'",
     "media-src 'self' blob:",
     "font-src 'self' data:",
+    "frame-src https://www.youtube.com https://www.youtube-nocookie.com",
     "base-uri 'self'",
     "form-action 'self'",
     "frame-ancestors 'none'",
@@ -257,12 +259,45 @@ async function handleWord(req, res) {
   sendJSON(res, 200, entry);
 }
 
+async function handleYoutubeSearch(req, res) {
+  const body = await readBody(req);
+  const result = await searchYouTube({
+    query: body.query,
+    apiKey: String(body.youtubeKey || process.env.YOUTUBE_API_KEY || '').trim(),
+    maxResults: body.maxResults,
+  });
+  sendJSON(res, 200, result);
+}
+
+async function handleYoutubeCaptions(req, res) {
+  const body = await readBody(req);
+  const result = await getVideoCaptions({ videoId: String(body.videoId || '').trim() });
+  sendJSON(res, 200, result);
+}
+
+async function handleYoutubeTranslate(req, res) {
+  const body = await readBody(req);
+  const cues = Array.isArray(body.cues) ? body.cues : [];
+  if (!cues.length) throw new HttpError(400, '缺少字幕内容。', 'BAD_CUES');
+  const config = resolveRequest(body);
+  const result = await translateCues({
+    videoId: String(body.videoId || ''),
+    cues,
+    config,
+  });
+  sendJSON(res, 200, result);
+}
+
 async function handleStatic(req, res, urlPath) {
   let filePath;
   if (urlPath === '/' || urlPath === '/index.html') {
     filePath = path.join(PUBLIC_DIR, 'index.html');
   } else if (urlPath === '/report' || urlPath === '/report/') {
     filePath = path.join(PUBLIC_DIR, 'report.html');
+  } else if (urlPath === '/videos' || urlPath === '/videos/') {
+    filePath = path.join(PUBLIC_DIR, 'videos.html');
+  } else if (urlPath === '/watch' || urlPath === '/watch/') {
+    filePath = path.join(PUBLIC_DIR, 'watch.html');
   } else if (urlPath.startsWith('/data/')) {
     filePath = path.join(DATA_DIR, urlPath.slice('/data/'.length));
   } else {
@@ -324,6 +359,8 @@ const server = http.createServer(async (req, res) => {
         version: VERSION,
         node: process.version,
         providers: publicProviders(),
+        youtube: { hasEnvKey: Boolean(process.env.YOUTUBE_API_KEY), hasCookie: Boolean(process.env.YOUTUBE_COOKIE) },
+        proxy: { enabled: Boolean(process.env.NODE_USE_ENV_PROXY === '1' && (process.env.HTTPS_PROXY || process.env.HTTP_PROXY)) },
         mode: process.env.ENOS_DEMO_ONLY === '1' ? 'local-only' : 'auto',
       });
     }
@@ -336,7 +373,8 @@ const server = http.createServer(async (req, res) => {
         if (!allowed.includes(origin)) throw new HttpError(403, '跨站请求被拒绝。', 'BAD_ORIGIN');
       }
       if (rateLimited(ip)) throw new HttpError(429, '请求太频繁，请稍后再试。', 'RATE_LIMIT');
-      if (urlPath === '/api/chat' || urlPath === '/api/search' || urlPath === '/api/extract' || urlPath === '/api/word') {
+      if (urlPath === '/api/chat' || urlPath === '/api/search' || urlPath === '/api/extract' || urlPath === '/api/word'
+        || urlPath === '/api/youtube/search' || urlPath === '/api/youtube/captions' || urlPath === '/api/youtube/translate') {
         if (req.method !== 'POST') throw new HttpError(405, '该接口只接受 POST。', 'METHOD_NOT_ALLOWED');
         if (urlPath === '/api/chat') {
           await handleChat(req, res);
@@ -351,6 +389,21 @@ const server = http.createServer(async (req, res) => {
         if (urlPath === '/api/word') {
           await handleWord(req, res);
           console.log(`[api] word ${res.statusCode} ${Date.now() - started}ms`);
+          return;
+        }
+        if (urlPath === '/api/youtube/search') {
+          await handleYoutubeSearch(req, res);
+          console.log(`[api] youtube-search ${res.statusCode} ${Date.now() - started}ms`);
+          return;
+        }
+        if (urlPath === '/api/youtube/captions') {
+          await handleYoutubeCaptions(req, res);
+          console.log(`[api] youtube-captions ${res.statusCode} ${Date.now() - started}ms`);
+          return;
+        }
+        if (urlPath === '/api/youtube/translate') {
+          await handleYoutubeTranslate(req, res);
+          console.log(`[api] youtube-translate ${res.statusCode} ${Date.now() - started}ms`);
           return;
         }
         await handleSearch(req, res);

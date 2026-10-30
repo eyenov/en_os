@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light" />
+  <title>视频精听 · EnOS</title>
+  <meta name="description" content="搜索 YouTube 英文视频，打开逐词高亮的双语字幕播放页。" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="EnOS 首页">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 28 28" fill="none">
+          <rect x="1" y="1" width="26" height="26" rx="8" fill="currentColor" />
+          <path d="M8 18.5L12.2 10l4 8.5L21 8" stroke="#fffdf7" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="21" cy="8" r="1.8" fill="#c9f27c"/>
+        </svg>
+      </span>
+      <span class="brand-word">EnOS<span class="brand-dot">.</span></span>
+      <span class="brand-sub">视频精听</span>
+    </a>
+    <nav class="nav" aria-label="主导航">
+      <a href="/#/home">学习</a>
+      <a href="/#/listening">听力</a>
+      <a href="/videos.html" class="active" aria-current="page">视频</a>
+      <a href="/#/reports">报告</a>
+      <a href="/#/settings">设置</a>
+    </nav>
+    <div class="topbar-right">
+      <a class="btn btn-ghost btn-sm" href="/">回到学习</a>
+    </div>
+  </header>
+
+  <main class="app video-page">
+    <section class="video-hero">
+      <p class="eyebrow">YouTube · Listen word by word</p>
+      <h1>搜一个英文视频，<br />让字幕跟着声音走。</h1>
+      <p class="lede">输入关键词，挑一个有字幕的视频。播放时左侧看画面，右侧对照英文与中文，当前单词会逐个亮起；点字幕可以跳转。</p>
+      <form class="video-search" id="video-search" role="search">
+        <label class="sr-only" for="video-q">搜索 YouTube 视频</label>
+        <span class="video-search-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        </span>
+        <input id="video-q" name="q" type="search" placeholder="IELTS listening, TED-Ed…" autocomplete="off" />
+        <button class="btn btn-primary" type="submit">搜索视频</button>
+      </form>
+      <div class="video-examples" id="video-examples"></div>
+    </section>
+
+    <section id="video-results" class="video-results" aria-live="polite">
+      <div class="video-skeleton-grid">
+        <div class="skeleton video-skeleton"></div>
+        <div class="skeleton video-skeleton"></div>
+        <div class="skeleton video-skeleton"></div>
+      </div>
+    </section>
+
+    <p class="video-foot-note">
+      视频与字幕来自 YouTube。搜索优先使用你配置的 Data API Key；没有 Key 时会尝试公开结果页。字幕由视频上传者或自动识别提供，并非每个视频都有。
+    </p>
+  </main>
+
+  <footer class="site-foot">
+    <div class="foot-left"><span class="foot-mark">EnOS</span><span>视频只是入口，逐词精听才是练习</span></div>
+    <div class="foot-right"><a href="/#/settings">配置 YouTube Key</a><span aria-hidden="true">·</span><span>EN · 中文</span></div>
+  </footer>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <script type="module" src="/js/videos.js"></script>
+</body>
+</html>

@@ -29,22 +29,6 @@ export function listVoices() {
   return voices.slice();
 }
 
-function pickVoice(lang = 'en-GB') {
-  if (!voicesReady) refreshVoices();
-  const preferred = [
-    'Google UK English Female', 'Microsoft Sonia', 'Microsoft Libby', 'Microsoft Ryan',
-    'Google US English', 'Samantha', 'Daniel', 'Serena', 'Microsoft Aria',
-  ];
-  for (const name of preferred) {
-    const match = voices.find((voice) => voice.name.includes(name));
-    if (match) return match;
-  }
-  return voices.find((voice) => voice.lang.replace('_', '-') === lang)
-    || voices.find((voice) => voice.lang.startsWith(lang.slice(0, 2)))
-    || voices[0]
-    || null;
-}
-
 function splitSentences(text, max = 190) {
   const clean = String(text || '').replace(/\s+/g, ' ').trim();
   if (!clean) return [];
@@ -69,7 +53,24 @@ function splitSentences(text, max = 190) {
 
 export function stopSpeaking() {
   speakToken += 1;
-  if (synth) synth.cancel();
+  if (!synth) return;
+  synth.cancel();
+  // Chrome can stay paused after cancel(); without this the next speak is silent.
+  synth.resume();
+}
+
+/** Split into utterance chunks and record each chunk's offset in the full text. */
+export function speechChunks(text) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return [];
+  const chunks = splitSentences(clean);
+  let searchFrom = 0;
+  return chunks.map((chunk) => {
+    const at = clean.indexOf(chunk, searchFrom);
+    const start = at < 0 ? searchFrom : at;
+    searchFrom = start + chunk.length;
+    return { text: chunk, start };
+  });
 }
 
 export function pauseSpeaking() {
@@ -80,16 +81,16 @@ export function resumeSpeaking() {
   if (synth) synth.resume();
 }
 
-export function speak(text, { rate = 0.92, lang = 'en-GB', onStart, onEnd, onError } = {}) {
+export function speak(text, { rate = 0.92, lang = 'en-GB', onStart, onBoundary, onEnd, onError } = {}) {
   if (!synth) {
     onEnd?.();
     return () => {};
   }
   stopSpeaking();
+  synth.resume();
   const token = speakToken;
-  const chunks = splitSentences(text);
+  const chunks = speechChunks(text);
   if (!chunks.length) { onEnd?.(); return () => {}; }
-  const voice = pickVoice(lang);
   let index = 0;
   let finished = false;
 
@@ -102,24 +103,112 @@ export function speak(text, { rate = 0.92, lang = 'en-GB', onStart, onEnd, onErr
   const playNext = () => {
     if (token !== speakToken || finished) return;
     if (index >= chunks.length) { finish(); return; }
-    const utterance = new SpeechSynthesisUtterance(chunks[index]);
+    const chunkIndex = index;
+    const utterance = new SpeechSynthesisUtterance(chunks[chunkIndex].text);
     index += 1;
     utterance.rate = rate;
-    utterance.lang = voice?.lang || lang;
+    utterance.lang = lang;
     utterance.pitch = 1;
-    if (voice) utterance.voice = voice;
     utterance.onstart = () => { if (index === 1) onStart?.(); };
+    utterance.onboundary = (event) => {
+      if (token !== speakToken) return;
+      onBoundary?.({
+        charIndex: chunks[chunkIndex].start + (event.charIndex || 0),
+        charLength: event.charLength || 0,
+        name: event.name || '',
+      });
+    };
     utterance.onend = () => playNext();
     utterance.onerror = (event) => {
       if (event.error === 'canceled' || event.error === 'interrupted') return;
       onError?.(event);
       finish();
     };
-    synth.speak(utterance);
+    const speakNow = () => {
+      try {
+        synth.speak(utterance);
+      } catch (error) {
+        onError?.(error);
+        finish();
+      }
+    };
+    if (chunkIndex === 0) {
+      // A tiny gap avoids a Chrome race where cancel() + speak() in one tick is silent.
+      setTimeout(() => {
+        if (token === speakToken && !finished) speakNow();
+      }, 40);
+    } else {
+      speakNow();
+    }
   };
 
-  onStart?.();
+  // Do not fire onStart here: the fallback timing must begin when the utterance
+  // actually starts, not when it is queued (voices can take seconds to start).
   playNext();
+  return () => {
+    speakToken += 1;
+    synth.cancel();
+  };
+}
+
+/**
+ * Speak one word per utterance. This trades natural prosody for exact word
+ * timing: onstart tells us precisely which word is audible.
+ */
+export function speakWords(words, { rate = 0.95, lang = 'en-GB', onWord, onEnd, onError } = {}) {
+  if (!synth) {
+    onEnd?.();
+    return () => {};
+  }
+  const list = (Array.isArray(words) ? words : []).map((word) => String(word || '').trim()).filter(Boolean);
+  if (!list.length) {
+    onEnd?.();
+    return () => {};
+  }
+  stopSpeaking();
+  synth.resume();
+  const token = speakToken;
+  let finished = false;
+  const finish = () => {
+    if (finished || token !== speakToken) return;
+    finished = true;
+    onEnd?.();
+  };
+
+  const utteranceRefs = [];
+  list.forEach((word, index) => {
+    const utterance = new SpeechSynthesisUtterance(word);
+    utterance.rate = rate;
+    utterance.lang = lang;
+    utterance.pitch = 1;
+    utterance.onstart = () => {
+      if (token !== speakToken || finished) return;
+      onWord?.(index);
+    };
+    utterance.onend = () => {
+      if (index === list.length - 1) finish();
+    };
+    utterance.onerror = (event) => {
+      if (event.error === 'canceled' || event.error === 'interrupted') return;
+      onError?.(event);
+      finish();
+    };
+    utteranceRefs.push(utterance);
+  });
+
+  setTimeout(() => {
+    if (token !== speakToken || finished) return;
+    for (const utterance of utteranceRefs) {
+      try {
+        synth.speak(utterance);
+      } catch (error) {
+        onError?.(error);
+        finish();
+        return;
+      }
+    }
+  }, 30);
+
   return () => {
     speakToken += 1;
     synth.cancel();

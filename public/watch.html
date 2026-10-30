@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light" />
+  <title>视频播放 · EnOS</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body class="watch-body">
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="EnOS 首页">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 28 28" fill="none">
+          <rect x="1" y="1" width="26" height="26" rx="8" fill="currentColor" />
+          <path d="M8 18.5L12.2 10l4 8.5L21 8" stroke="#fffdf7" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="21" cy="8" r="1.8" fill="#c9f27c"/>
+        </svg>
+      </span>
+      <span class="brand-word">EnOS<span class="brand-dot">.</span></span>
+      <span class="brand-sub">逐词字幕</span>
+    </a>
+    <nav class="nav" aria-label="主导航">
+      <a href="/#/home">学习</a>
+      <a href="/#/listening">听力</a>
+      <a href="/videos.html" class="active" aria-current="page">视频</a>
+      <a href="/#/reports">报告</a>
+      <a href="/#/settings">设置</a>
+    </nav>
+    <div class="topbar-right">
+      <a class="btn btn-ghost btn-sm" id="back-to-search" href="/videos.html">返回搜索</a>
+    </div>
+  </header>
+
+  <main class="app watch-page" id="watch">
+    <div class="watch-head" id="watch-head">
+      <p class="eyebrow">Loading video…</p>
+      <h1>正在读取视频与字幕</h1>
+    </div>
+    <div class="watch-layout">
+      <section class="player-panel">
+        <div class="player-shell">
+          <div id="yt-player" class="player-mount"></div>
+          <div id="player-fallback" class="player-fallback hidden"></div>
+        </div>
+        <div class="player-bar">
+          <span class="player-time" id="player-time">0:00 / 0:00</span>
+          <span class="player-sync" id="player-sync"><i></i><span>等待播放</span></span>
+          <span class="spacer"></span>
+          <a class="link-btn" id="open-youtube" href="https://www.youtube.com" target="_blank" rel="noreferrer">在 YouTube 打开 ↗</a>
+        </div>
+        <div class="now-line" id="now-line">
+          <div class="now-label">当前句 · NOW</div>
+          <p class="now-en" id="now-en">播放后，这里会显示当前英文句子。</p>
+          <p class="now-zh" id="now-zh">中文字幕会同步出现。</p>
+        </div>
+        <div class="player-notes">
+          <h3>怎么用这一页</h3>
+          <ol>
+            <li><strong>盲听一遍</strong>：先不看字幕，抓住大意。</li>
+            <li><strong>跟读一句</strong>：点右侧任意一句，会跳到对应时间；跟着读。</li>
+            <li><strong>记住一个词</strong>：当前单词会逐个亮起，结束后回看整句。</li>
+          </ol>
+        </div>
+      </section>
+
+      <aside class="subtitle-panel" aria-label="双语字幕">
+        <div class="subtitle-head">
+          <div>
+            <h2>双语字幕</h2>
+            <p id="subtitle-status">正在加载字幕…</p>
+          </div>
+          <div class="subtitle-tools">
+            <button class="btn btn-soft btn-sm hidden" id="translate-btn" type="button">AI 中文字幕</button>
+            <label class="sub-toggle"><input type="checkbox" id="auto-scroll" checked /> 自动滚动</label>
+          </div>
+        </div>
+        <div class="subtitle-columns" id="subtitle-columns">
+          <div class="sub-col">
+            <div class="sub-col-title"><span>EN</span> English</div>
+            <div class="sub-scroll" id="sub-en"></div>
+          </div>
+          <div class="sub-col">
+            <div class="sub-col-title"><span>中</span> 中文</div>
+            <div class="sub-scroll" id="sub-zh"></div>
+          </div>
+        </div>
+        <div class="subtitle-foot">
+          <span id="subtitle-hint">点击任意一句跳转 · 逐词高亮</span>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <script type="module" src="/js/watch.js"></script>
+</body>
+</html>
