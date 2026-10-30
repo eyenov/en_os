@@ -70,12 +70,24 @@ const podcast = {
   ticker: null,
   requestSeq: 0,
   translateSeq: 0,
+  audioCtx: null,
+  analyser: null,
+  sourceNode: null,
+  freqData: null,
+  visualFrame: null,
+  wavePhase: 0,
+  waveValues: [],
 };
 
 const podcastCover = document.getElementById('podcast-cover');
 const podcastTitle = document.getElementById('podcast-title');
 const podcastMeta = document.getElementById('podcast-meta');
+const podcastDesc = document.getElementById('podcast-desc');
 const podcastAudio = document.getElementById('podcast-audio');
+const podcastPlay = document.getElementById('podcast-play');
+const podcastWave = document.getElementById('podcast-wave');
+const podcastCurrent = document.getElementById('podcast-current');
+const podcastDuration = document.getElementById('podcast-duration');
 const podcastStatus = document.getElementById('podcast-status');
 const podcastTranslate = document.getElementById('podcast-translate');
 const podcastEn = document.getElementById('podcast-en');
@@ -427,6 +439,10 @@ async function openPodcastChannel(channel, { selectLatest = false } = {}) {
 function setPodcastInfo(channel, episode) {
   podcastTitle.textContent = episode.title;
   podcastMeta.textContent = [channel.name, episode.date, episode.duration].filter(Boolean).join(' · ');
+  podcastDesc.textContent = episode.description || '';
+  podcastCurrent.textContent = '0:00';
+  podcastDuration.textContent = episode.duration || '0:00';
+  podcast.waveValues = [];
   podcastCover.alt = '';
   podcastCover.src = episode.image || '';
   podcastCover.style.visibility = episode.image ? 'visible' : 'hidden';
@@ -435,7 +451,9 @@ function setPodcastInfo(channel, episode) {
     podcastAudio.dataset.episode = episode.id;
     podcastAudio.src = `/api/podcasts/audio?channel=${encodeURIComponent(channel.id)}&episode=${encodeURIComponent(episode.id)}`;
     podcastAudio.load();
+    drawPodcastWave();
   }
+  updatePodcastPlayButton();
 }
 
 async function openPodcastEpisode(channel, episode) {
@@ -672,14 +690,253 @@ function stopPodcastTicker() {
   podcast.ticker = null;
 }
 
-podcastAudio.addEventListener('timeupdate', syncPodcast);
-podcastAudio.addEventListener('seeked', syncPodcast);
-podcastAudio.addEventListener('play', startPodcastTicker);
-podcastAudio.addEventListener('pause', () => { stopPodcastTicker(); syncPodcast(); });
-podcastAudio.addEventListener('ended', stopPodcastTicker);
+podcastAudio.addEventListener('timeupdate', () => {
+  updatePodcastTimes();
+  drawPodcastWave();
+  syncPodcast();
+});
+podcastAudio.addEventListener('seeked', () => { updatePodcastTimes(); drawPodcastWave(); syncPodcast(); });
+podcastAudio.addEventListener('loadedmetadata', updatePodcastTimes);
+podcastAudio.addEventListener('durationchange', updatePodcastTimes);
+podcastAudio.addEventListener('play', () => {
+  updatePodcastPlayButton();
+  startPodcastTicker();
+  startPodcastVisual();
+});
+podcastAudio.addEventListener('pause', () => {
+  updatePodcastPlayButton();
+  stopPodcastTicker();
+  stopPodcastVisual();
+  drawPodcastWave();
+  syncPodcast();
+});
+podcastAudio.addEventListener('ended', () => {
+  stopPodcastTicker();
+  stopPodcastVisual();
+  updatePodcastPlayButton();
+  drawPodcastWave();
+});
 podcastAudio.addEventListener('error', () => { podcastStatus.textContent = '音频无法播放，请检查网络或代理'; });
 podcastTranslate.addEventListener('click', translatePodcast);
 podcastCover.addEventListener('error', () => { podcastCover.style.visibility = 'hidden'; });
+
+function podcastDurationValue() {
+  return Number(podcastAudio.duration) || Number(podcast.selectedEpisode?.durationSeconds) || 0;
+}
+
+function updatePodcastTimes() {
+  podcastCurrent.textContent = formatTimestamp(podcastAudio.currentTime || 0);
+  const duration = podcastDurationValue();
+  podcastDuration.textContent = duration ? formatTimestamp(duration) : (podcast.selectedEpisode?.duration || '0:00');
+}
+
+function updatePodcastPlayButton() {
+  podcastPlay.innerHTML = icon(podcastAudio.paused ? 'play' : 'pause', 18);
+  podcastPlay.setAttribute('aria-label', podcastAudio.paused ? '播放' : '暂停');
+}
+
+function ensurePodcastAudioGraph() {
+  if (podcast.audioCtx || !(window.AudioContext || window.webkitAudioContext)) return;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.82;
+    const source = ctx.createMediaElementSource(podcastAudio);
+    source.connect(analyser);
+    analyser.connect(ctx.destination);
+    podcast.audioCtx = ctx;
+    podcast.analyser = analyser;
+    podcast.sourceNode = source;
+    podcast.freqData = new Uint8Array(analyser.frequencyBinCount);
+  } catch {
+    podcast.audioCtx = null;
+    podcast.analyser = null;
+  }
+}
+
+function drawPodcastWave() {
+  const canvas = podcastWave;
+  if (!canvas) return;
+  const width = canvas.clientWidth;
+  const height = canvas.clientHeight;
+  if (!width || !height) return;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const points = 84;
+  const values = [];
+  const hasSignal = podcast.analyser && podcast.audioCtx?.state === 'running' && !podcastAudio.paused;
+  if (hasSignal) {
+    podcast.analyser.getByteFrequencyData(podcast.freqData);
+    let peak = 1;
+    for (const value of podcast.freqData) peak = Math.max(peak, value);
+    for (let index = 0; index < points; index += 1) {
+      const bin = Math.floor(Math.pow(index / points, 1.45) * (podcast.freqData.length - 1));
+      const raw = podcast.freqData[bin] / peak;
+      values.push(0.18 + Math.min(0.82, raw) * 0.72);
+    }
+    podcast.waveValues = values;
+  } else if (podcast.waveValues?.length === points) {
+    values.push(...podcast.waveValues);
+  } else {
+    const phase = performance.now() / 900;
+    for (let index = 0; index < points; index += 1) {
+      const wave = Math.abs(Math.sin(index * 0.29 + phase)) * 0.55
+        + Math.abs(Math.sin(index * 0.071 - phase * 0.7)) * 0.45;
+      values.push(0.1 + wave * 0.34);
+    }
+  }
+
+  const mid = height / 2;
+  const progress = podcastDurationValue() ? Math.min(1, Math.max(0, podcastAudio.currentTime / podcastDurationValue())) : 0;
+  const playX = width * progress;
+
+  const curve = (color, lineWidth, fill) => {
+    const amp = height * 0.46;
+    ctx.beginPath();
+    ctx.moveTo(0, mid);
+    for (let index = 0; index < points; index += 1) {
+      const x = (index / (points - 1)) * width;
+      const y = mid - values[index] * amp;
+      if (index === 0) ctx.lineTo(x, y);
+      else {
+        const prevX = ((index - 1) / (points - 1)) * width;
+        const prevY = mid - values[index - 1] * amp;
+        ctx.quadraticCurveTo((prevX + x) / 2, (prevY + y) / 2, x, y);
+      }
+    }
+    for (let index = points - 1; index >= 0; index -= 1) {
+      const x = (index / (points - 1)) * width;
+      const y = mid + values[index] * amp;
+      if (index === points - 1) ctx.lineTo(x, y);
+      else {
+        const nextX = ((index + 1) / (points - 1)) * width;
+        const nextY = mid + values[index + 1] * amp;
+        ctx.quadraticCurveTo((nextX + x) / 2, (nextY + y) / 2, x, y);
+      }
+    }
+    ctx.closePath();
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    if (lineWidth) { ctx.strokeStyle = color; ctx.lineWidth = lineWidth; ctx.stroke(); }
+  };
+
+  curve('rgba(73,56,239,.38)', 1.2, 'rgba(73,56,239,.16)');
+  if (playX > 0) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, playX, height);
+    ctx.clip();
+    curve('rgba(73,56,239,.95)', 1.8, 'rgba(73,56,239,.40)');
+    ctx.restore();
+  }
+  ctx.beginPath();
+  ctx.strokeStyle = 'rgba(73,56,239,.1)';
+  ctx.lineWidth = 1;
+  ctx.moveTo(0, mid);
+  ctx.lineTo(width, mid);
+  ctx.stroke();
+  if (playX >= 0) {
+    ctx.beginPath();
+    ctx.strokeStyle = '#4938ef';
+    ctx.lineWidth = 1.5;
+    ctx.moveTo(playX, 5);
+    ctx.lineTo(playX, height - 5);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.fillStyle = '#4938ef';
+    ctx.arc(playX, mid, 2.8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  canvas.setAttribute('aria-valuemin', '0');
+  canvas.setAttribute('aria-valuemax', '100');
+  canvas.setAttribute('aria-valuenow', String(Math.round(progress * 100)));
+}
+
+function startPodcastVisual() {
+  if (podcast.visualFrame) return;
+  const tick = () => {
+    drawPodcastWave();
+    podcast.visualFrame = requestAnimationFrame(tick);
+  };
+  podcast.visualFrame = requestAnimationFrame(tick);
+}
+
+function stopPodcastVisual() {
+  if (podcast.visualFrame) cancelAnimationFrame(podcast.visualFrame);
+  podcast.visualFrame = null;
+}
+
+async function togglePodcastPlay() {
+  if (!podcastAudio.src) return;
+  if (podcastAudio.paused) {
+    try {
+      ensurePodcastAudioGraph();
+      await podcast.audioCtx?.resume?.();
+      await podcastAudio.play();
+    } catch (error) {
+      podcastStatus.textContent = error.message || '音频无法播放';
+    }
+  } else {
+    podcastAudio.pause();
+  }
+}
+
+function seekPodcastRatio(ratio) {
+  const duration = podcastDurationValue();
+  if (!duration) return;
+  podcastAudio.currentTime = Math.min(duration, Math.max(0, ratio * duration));
+  updatePodcastTimes();
+  drawPodcastWave();
+  syncPodcast();
+}
+
+podcastPlay.addEventListener('click', togglePodcastPlay);
+const wavePointer = (event) => {
+  const rect = podcastWave.getBoundingClientRect();
+  seekPodcastRatio((event.clientX - rect.left) / Math.max(1, rect.width));
+};
+podcastWave.addEventListener('pointerdown', (event) => {
+  event.preventDefault();
+  podcastWave.setPointerCapture?.(event.pointerId);
+  wavePointer(event);
+  const move = (moveEvent) => wavePointer(moveEvent);
+  const up = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up, { once: true });
+  };
+  window.addEventListener('pointermove', move, { passive: true });
+  window.addEventListener('pointerup', up, { once: true });
+});
+podcastWave.addEventListener('keydown', (event) => {
+  const duration = podcastDurationValue();
+  if (!duration) return;
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+    event.preventDefault();
+    podcastAudio.currentTime = Math.min(duration, Math.max(0, podcastAudio.currentTime + (event.key === 'ArrowRight' ? 5 : -5)));
+    updatePodcastTimes();
+    drawPodcastWave();
+    syncPodcast();
+  } else if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault();
+    podcastAudio.currentTime = event.key === 'Home' ? 0 : duration;
+    updatePodcastTimes();
+    drawPodcastWave();
+    syncPodcast();
+  }
+});
+if ('ResizeObserver' in window) {
+  new ResizeObserver(() => drawPodcastWave()).observe(podcastWave);
+}
+updatePodcastPlayButton();
+requestAnimationFrame(drawPodcastWave);
 
 /* ---------- in-pane video detail ---------- */
 

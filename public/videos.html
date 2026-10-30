@@ -91,8 +91,19 @@
               <p class="eyebrow">PODCAST</p>
               <h1 id="podcast-title">从左侧选择一集播客</h1>
               <p id="podcast-meta">展开频道，选择一集开始精听</p>
-              <audio id="podcast-audio" controls preload="metadata"></audio>
+              <p id="podcast-desc" class="podcast-desc"></p>
             </div>
+          </div>
+          <div class="podcast-player" id="podcast-player">
+            <button class="podcast-play" id="podcast-play" type="button" aria-label="播放">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M8 5l11 7-11 7z"/></svg>
+            </button>
+            <span class="podcast-time" id="podcast-current">0:00</span>
+            <div class="podcast-wave-wrap">
+              <canvas id="podcast-wave" role="slider" tabindex="0" aria-label="播放进度"></canvas>
+            </div>
+            <span class="podcast-time" id="podcast-duration">0:00</span>
+            <audio id="podcast-audio" preload="metadata"></audio>
           </div>
           <div class="podcast-subtitles">
             <div class="podcast-sub-head">
