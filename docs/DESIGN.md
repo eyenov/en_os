@@ -412,7 +412,7 @@ YouTube 的机器人验证是**瞬时**的：同一个视频可能第一次 `LOG
 
 前端播客视图：
 
-- 左侧频道树复用工作台树：频道节点可展开 episode 子列表，选中单集；
+- 左侧频道列表：圆形封面、频道名、集数徽标、下载最新一期；默认不展开单集，点击箭头展开；
 - 右侧顶部自定义播放器：播放/暂停、时间、可点击/拖动的 Web Audio AnalyserNode 动态曲线；音频元素隐藏，MediaElementSource → Analyser → destination；
 - 下方 English / 中文两列独立滚动，使用与视频页相同的 `normalizeCues / findCueIndex / findWordIndex / activeCharCount`，按音频 `currentTime` 做词级/逐字高亮；
 - 点击字幕 seek 音频；中文复用视频翻译接口；长单集按 200 句分块并显示进度。

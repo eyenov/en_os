@@ -61,6 +61,7 @@ const podcast = {
   loading: false,
   channels: [],
   episodes: new Map(),
+  promises: new Map(),
   expanded: new Set(),
   selectedChannel: '',
   selectedEpisode: null,
@@ -349,13 +350,61 @@ function podcastChannelById(id) {
   return podcast.channels.find((channel) => channel.id === id) || null;
 }
 
+function loadPodcastEpisodes(channel) {
+  if (podcast.episodes.has(channel.id)) return Promise.resolve(podcast.episodes.get(channel.id));
+  if (podcast.promises.has(channel.id)) return podcast.promises.get(channel.id);
+  const promise = getPodcastEpisodes(channel.id)
+    .then((data) => {
+      const episodes = Array.isArray(data.episodes) ? data.episodes : [];
+      podcast.episodes.set(channel.id, episodes);
+      return episodes;
+    })
+    .finally(() => podcast.promises.delete(channel.id));
+  podcast.promises.set(channel.id, promise);
+  return promise;
+}
+
+function podcastChannelAvatar(channel, episodes) {
+  const image = episodes[0]?.image;
+  if (!image) return h('span', { class: 'podcast-avatar' }, initialOf(channel.name));
+  return h('span', { class: 'podcast-avatar' },
+    h('img', {
+      src: image,
+      alt: '',
+      loading: 'lazy',
+      onerror: (event) => {
+        event.currentTarget.replaceWith(document.createTextNode(initialOf(channel.name)));
+      },
+    }),
+  );
+}
+
+async function downloadPodcastLatest(channel) {
+  try {
+    const episodes = await loadPodcastEpisodes(channel);
+    const latest = episodes[0];
+    if (!latest) throw new Error('这个频道还没有可下载的单集');
+    const filename = `${String(latest.title || channel.name).replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, '-').slice(0, 90)}.mp3`;
+    const anchor = document.createElement('a');
+    anchor.href = `/api/podcasts/audio?channel=${encodeURIComponent(channel.id)}&episode=${encodeURIComponent(latest.id)}&download=1`;
+    anchor.download = filename;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    toast(`开始下载：${latest.title}`, 'ok', 2800);
+  } catch (error) {
+    toast(error.message || '播客下载失败', 'err', 3600);
+  }
+}
+
 function renderPodcastTree() {
   if (state.tab !== 'podcast' || state.view !== 'videos') return;
   channelList.replaceChildren();
   treeEyebrow.textContent = 'PODCAST CHANNELS';
-  treeTitle.textContent = '播客频道';
+  treeTitle.textContent = '播客列表';
+  const loadedEpisodes = [...podcast.episodes.values()].reduce((total, items) => total + items.length, 0);
   treeCount.textContent = podcast.channels.length
-    ? `${podcast.channels.length} 个频道 · Podnews 带 VTT 字幕`
+    ? `${podcast.channels.length} 个频道 · ${loadedEpisodes || '…'} 集`
     : podcast.loading ? '正在读取播客频道…' : '暂无播客频道';
   if (!podcast.channels.length) {
     channelList.append(h('div', { class: 'tree-empty' }, podcast.loading ? '正在读取播客源…' : '暂时没有可用的播客频道。'));
@@ -366,7 +415,7 @@ function renderPodcastTree() {
     const episodes = podcast.episodes.get(channel.id) || [];
     const expanded = podcast.expanded.has(channel.id);
     const selected = podcast.selectedChannel === channel.id;
-    const row = h('div', { class: 'tree-row' });
+    const row = h('div', { class: 'tree-row podcast-row' });
     row.append(h('button', {
       class: 'tree-caret',
       type: 'button',
@@ -375,13 +424,23 @@ function renderPodcastTree() {
       onclick: () => togglePodcastChannel(channel),
     }, h('span', { html: icon(expanded ? 'chevronDown' : 'chevronRight', 14) })));
     row.append(h('button', {
-      class: `tree-main${selected ? ' active' : ''}`,
+      class: `tree-main podcast-main${selected ? ' active' : ''}`,
       type: 'button',
       onclick: () => openPodcastChannel(channel, { selectLatest: true }),
     },
-    h('span', { class: 'tree-avatar' }, initialOf(channel.name)),
+    podcastChannelAvatar(channel, episodes),
     h('span', { class: 'tree-name' }, channel.name),
-    h('span', { class: 'tree-count' }, episodes.length ? String(episodes.length) : '')));
+    h('span', { class: 'tree-count podcast-count' }, episodes.length ? String(episodes.length) : '…')));
+    row.append(h('button', {
+      class: 'tree-download',
+      type: 'button',
+      title: '下载最新一期',
+      'aria-label': `下载 ${channel.name} 最新一期`,
+      onclick: (event) => {
+        event.stopPropagation();
+        downloadPodcastLatest(channel);
+      },
+    }, h('span', { html: icon('download', 14) })));
     const node = h('div', { class: 'tree-node' }, row);
     if (expanded && episodes.length) {
       node.append(h('div', { class: 'tree-sub' }, episodes.map((episode) => h('button', {
@@ -409,6 +468,13 @@ async function ensurePodcast() {
     podcast.initialized = true;
     podcast.loading = false;
     renderPodcastTree();
+    for (const channel of podcast.channels) {
+      loadPodcastEpisodes(channel)
+        .then(() => {
+          if (state.tab === 'podcast' && state.view === 'videos') renderPodcastTree();
+        })
+        .catch(() => { /* 单集数量失败时保留省略号 */ });
+    }
     const first = podcast.channels[0];
     if (first) await openPodcastChannel(first, { selectLatest: true });
   } catch (error) {
@@ -430,8 +496,7 @@ async function togglePodcastChannel(channel) {
   if (!podcast.episodes.has(channel.id)) {
     treeCount.textContent = `正在读取 ${channel.name}…`;
     try {
-      const data = await getPodcastEpisodes(channel.id);
-      podcast.episodes.set(channel.id, data.episodes || []);
+      await loadPodcastEpisodes(channel);
     } catch (error) {
       toast(error.message || '播客单集加载失败', 'err', 4200);
     }
@@ -441,13 +506,11 @@ async function togglePodcastChannel(channel) {
 
 async function openPodcastChannel(channel, { selectLatest = false } = {}) {
   podcast.selectedChannel = channel.id;
-  podcast.expanded.add(channel.id);
   if (!podcast.episodes.has(channel.id)) {
     podcast.loading = true;
     treeCount.textContent = `正在读取 ${channel.name}…`;
     try {
-      const data = await getPodcastEpisodes(channel.id);
-      podcast.episodes.set(channel.id, data.episodes || []);
+      await loadPodcastEpisodes(channel);
     } catch (error) {
       podcast.loading = false;
       toast(error.message || '播客单集加载失败', 'err', 4200);
@@ -488,7 +551,6 @@ function setPodcastInfo(channel, episode) {
 async function openPodcastEpisode(channel, episode) {
   podcast.selectedChannel = channel.id;
   podcast.selectedEpisode = episode;
-  podcast.expanded.add(channel.id);
   podcast.translateSeq += 1;
   podcast.translating = false;
   renderPodcastTree();

@@ -429,7 +429,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (urlPath === '/api/podcasts/audio') {
         if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, '该接口只接受 GET。', 'METHOD_NOT_ALLOWED');
-        const { response } = await openPodcastAudio(
+        const { response, episode } = await openPodcastAudio(
           String(url.searchParams.get('channel') || ''),
           String(url.searchParams.get('episode') || ''),
           String(req.headers.range || ''),
@@ -439,6 +439,10 @@ const server = http.createServer(async (req, res) => {
           'Accept-Ranges': 'bytes',
           'Cache-Control': 'public, max-age=3600',
         };
+        if (url.searchParams.get('download') === '1') {
+          const filename = `${String(episode.title || 'podcast').replace(/[^\w.-]+/g, '_').slice(0, 90)}.mp3`;
+          headers['Content-Disposition'] = `attachment; filename="${filename}"`;
+        }
         for (const name of ['content-length', 'content-range', 'last-modified', 'etag']) {
           const value = response.headers.get(name);
           if (value) headers[name] = value;

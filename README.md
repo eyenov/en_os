@@ -241,7 +241,7 @@ npm start
 
 - 服务端 `server/podcasts.mjs` 读取 RSS，筛选带 `text/vtt` 的 episode，解析 `enclosure` 音频、封面、日期、时长；
 - 拉取 VTT 后按时间轴切 cue，合并短句，再按词长分配词级时间；返回给前端的 cue 结构、`normalizeCues` / `findCueIndex` / `findWordIndex` / `activeCharCount` 与视频页完全共用；
-- 前端左侧是频道/单集导航树，右侧顶部是自定义音频播放器：播放/暂停、当前时间/总时长、可点击和拖动的 **Web Audio 动态曲线**（AnalyserNode 实时频谱），下面 English / 中文两列同步高亮；点字幕会 seek 音频；
+- 前端左侧是播客列表：圆形封面、频道名、集数徽标和「下载最新一期」按钮；点击频道切换内容，点击箭头展开单集；右侧顶部是自定义音频播放器：播放/暂停、当前时间/总时长、可点击和拖动的 **Web Audio 动态曲线**（AnalyserNode 实时频谱），下面 English / 中文两列同步高亮；点字幕会 seek 音频；
 - 音频由服务端 `/api/podcasts/audio` 以 Range 流式代理，浏览器只访问同源地址，避免 op3/buzzsprout 的重定向、User-Agent 和 CORS 问题；
 - 中文仍复用视频页的翻译管线：官方/模型优先，无 Key 时用 Google Translate 免费兜底；长单集会自动分批翻译并显示进度；
 - 封面来自 `podnews.net` / `storage.buzzsprout.com`，CSP 已放行；浏览器需要能访问封面域，音频本身由服务端代理。
