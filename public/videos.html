@@ -48,12 +48,12 @@
         <button class="tree-open-btn hidden" id="tree-open" type="button">频道</button>
       </header>
 
-      <section class="studio-workspace" id="videos-view">
+      <section class="studio-workspace" id="media-view">
         <aside class="channel-tree" id="channel-tree">
           <div class="tree-head">
             <div>
-              <p class="eyebrow">CHANNELS</p>
-              <h2>频道</h2>
+              <p class="eyebrow" id="tree-eyebrow">CHANNELS</p>
+              <h2 id="tree-title">频道</h2>
               <p id="tree-count">搜索后显示频道</p>
             </div>
             <button class="tree-collapse" id="tree-collapse" type="button" title="收起频道导航" aria-label="收起频道导航">‹</button>
@@ -61,7 +61,7 @@
           <div class="tree-scroll" id="channel-list"></div>
         </aside>
 
-        <section class="preview-pane">
+        <section class="preview-pane" id="youtube-pane">
           <div class="preview-top">
             <form class="studio-search" id="video-search" role="search">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
@@ -81,6 +81,80 @@
           </div>
           <div class="preview-scroll" id="video-results" aria-live="polite"></div>
         </section>
+
+        <section class="podcast-pane hidden" id="podcast-pane">
+          <div class="podcast-top">
+            <div class="podcast-cover-wrap">
+              <img id="podcast-cover" alt="" />
+            </div>
+            <div class="podcast-info">
+              <p class="eyebrow">PODCAST</p>
+              <h1 id="podcast-title">从左侧选择一集播客</h1>
+              <p id="podcast-meta">展开频道，选择一集开始精听</p>
+              <audio id="podcast-audio" controls preload="metadata"></audio>
+            </div>
+          </div>
+          <div class="podcast-subtitles">
+            <div class="podcast-sub-head">
+              <div>
+                <h2>同步字幕</h2>
+                <p id="podcast-status">选择一集播客后加载字幕</p>
+              </div>
+              <button class="btn btn-soft btn-sm hidden" id="podcast-translate" type="button">重试翻译</button>
+            </div>
+            <div class="podcast-sub-columns">
+              <div class="podcast-col">
+                <div class="podcast-col-title">ENGLISH</div>
+                <div class="podcast-col-scroll" id="podcast-en" aria-live="polite"></div>
+              </div>
+              <div class="podcast-col">
+                <div class="podcast-col-title">中文</div>
+                <div class="podcast-col-scroll" id="podcast-zh" aria-live="polite"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="video-detail hidden" id="video-detail">
+          <div class="detail-head">
+            <button class="detail-back" id="detail-back" type="button">← 视频列表</button>
+            <div class="detail-head-main">
+              <h1 id="detail-title">视频</h1>
+              <p id="detail-meta"></p>
+              <span id="detail-status" class="sr-only"></span>
+            </div>
+            <button class="btn btn-soft btn-sm hidden" id="detail-translate" type="button">重试翻译</button>
+            <button class="btn btn-ghost btn-sm detail-export" id="detail-export" type="button">导出字幕</button>
+          </div>
+          <div class="detail-body" id="detail-body">
+            <div class="detail-left" id="detail-left">
+              <div class="detail-player-shell">
+                <div id="detail-player" class="detail-player-mount"></div>
+                <div id="detail-fallback" class="detail-fallback hidden"></div>
+              </div>
+              <div class="detail-agent" id="detail-agent">
+                <div class="detail-messages" id="detail-messages" aria-live="polite"></div>
+                <form class="detail-chat-form" id="detail-chat-form">
+                  <textarea id="detail-chat-input" rows="2" maxlength="2000" placeholder="问 Agent：解释当前句 / 总结这段视频"></textarea>
+                  <button class="btn btn-primary" id="detail-chat-send" type="submit">发送</button>
+                </form>
+              </div>
+            </div>
+            <button class="detail-resize" id="detail-resize" type="button" title="拖动调整视频宽度 · 双击重置" aria-label="拖动调整视频宽度"></button>
+            <div class="detail-right">
+              <div class="detail-sub-columns">
+                <div class="detail-sub-col">
+                  <div class="detail-col-title">ENGLISH</div>
+                  <div class="detail-sub-scroll" id="detail-en" aria-live="polite"></div>
+                </div>
+                <div class="detail-sub-col">
+                  <div class="detail-col-title">中文</div>
+                  <div class="detail-sub-scroll" id="detail-zh" aria-live="polite"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
       </section>
 
       <section class="chat-view hidden" id="chat-view">
@@ -96,8 +170,8 @@
       <section class="studio-empty hidden" id="tab-empty">
         <div>
           <p class="eyebrow" id="tab-empty-eyebrow">COMING SOON</p>
-          <h2 id="tab-empty-title">播客暂未接入</h2>
-          <p id="tab-empty-text">当前先保留入口，后续可以接入播客频道与逐句字幕。</p>
+          <h2 id="tab-empty-title">图书暂未接入</h2>
+          <p id="tab-empty-text">入口先保留在这里，后续可以接入英文图书与章节精读。</p>
         </div>
       </section>
     </div>

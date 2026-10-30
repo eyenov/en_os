@@ -182,14 +182,15 @@ npm run smoke   # 真实浏览器端到端（需先 npm start，使用本机 Chr
 顶部 **视频** → `/videos.html` 打开新的视频工作台：
 
 - 页面采用左右布局：最左是工具栏，只保留 **视频 / 对话** 两个入口；学习、听力、报告、设置等旧菜单暂时不放进这个工作台；
-- 主区域顶部是 **YouTube / 播客 / 图书** 三个紧凑标签；播客、图书先保留入口和占位页，暂不接入内容；
+- 主区域顶部是 **YouTube / 播客 / 图书** 三个紧凑标签；播客已接入两个带 VTT 字幕的频道，图书先保留入口和占位页；
 - **视频**视图是「左侧频道导航树 + 右侧视频预览」：导航树可以整栏收起/展开，每个频道也可以展开视频子列表；右侧预览显示缩略图、标题、频道、描述、时长、播放量、发布时间和字幕标记；
-- 点预览卡片进入 `/watch.html?v=<videoId>`：**顶部只保留视频标题**；**播放器贴最左，字幕窗口铺满右侧**；每条字幕在同一行显示英文与中文，行高由较长的一侧决定；
+- **播客**视图是「左侧频道/单集树 + 顶部音频播放器 + 下方左右对照同步字幕」；
+- 点视频预览**不再跳转旧播放页**，而是在右侧内容区打开视频详情：左上视频（中间拖动分割线调整宽度，保持 16:9）、下面 Agent 对话、右侧 English / 中文两列同步字幕；「← 视频列表」返回预览；
 - **对话**视图是独立的大模型对话窗口，消息区内部滚动；未配置模型 Key 时会显示配置入口；
-- **播放器右侧有拖动把手**：左右拖动调整播放器与字幕的宽度比例，视频保持 16:9；比例存在 localStorage，双击把手或按 Home 重置；窄屏自动隐藏；
-- **播放器下方是视频 Agent 对话窗口**：高度按首屏计算、底边贴屏幕底部，消息区内部滚动，输入框固定在窗口底部；不再显示时间栏、当前句、使用说明等额外内容；
+- 视频详情中间有拖动分割线：左右拖动调整播放器/字幕宽度比例，比例存在 localStorage，双击重置；
+- 视频下方 Agent 窗口高度占满剩余空间，消息内部滚动，输入框固定在底部；
 - 字幕跟随播放位置滚动，英文 **逐词高亮**，中文按句内进度逐字高亮；
-- 点任意一句跳到对应时间，点单词跳到该词；可关闭自动滚动；
+- 点任意一句跳到对应时间，点单词跳到该词；
 - 官方中文字幕优先；没有官方中文时**自动翻译**：配置了模型 Key 用当前 chat 模型，未配置则走免 Key 的 Google Translate 兜底；
 - 「导出 MD」把标题、频道、视频链接、时间和中英逐句字幕写成 Markdown 下载；
 - Agent 需要模型 Key（设置页配置）；没有 Key 时对话窗口会给出配置入口。
@@ -226,7 +227,25 @@ npm start
 
 ![对话视图](docs/screenshots/video-chat.png)
 
-![播放器、双语字幕与视频 Agent](docs/screenshots/video-watch.png)
+![视频详情：左侧视频 + Agent，右侧英文/中文双列字幕](docs/screenshots/video-detail.png)
+
+### 播客精听
+
+播客标签接入了两个真实、公开、带 Podcasting 2.0 `podcast:transcript` 的资源：
+
+- **Podnews Daily** — `https://podnews.net/rss`，每集 3–6 分钟，每集带 `.vtt`；
+- **Podnews Weekly Review** — `https://feeds.buzzsprout.com/1538779.rss`，每周回顾，单集更长。
+
+实现方式：
+
+- 服务端 `server/podcasts.mjs` 读取 RSS，筛选带 `text/vtt` 的 episode，解析 `enclosure` 音频、封面、日期、时长；
+- 拉取 VTT 后按时间轴切 cue，合并短句，再按词长分配词级时间；返回给前端的 cue 结构、`normalizeCues` / `findCueIndex` / `findWordIndex` / `activeCharCount` 与视频页完全共用；
+- 前端左侧是频道/单集导航树，右侧顶部原生 `<audio controls>`，下面 English / 中文两列同步高亮；点字幕会 seek 音频；
+- 音频由服务端 `/api/podcasts/audio` 以 Range 流式代理，浏览器只访问同源地址，避免 op3/buzzsprout 的重定向、User-Agent 和 CORS 问题；
+- 中文仍复用视频页的翻译管线：官方/模型优先，无 Key 时用 Google Translate 免费兜底；长单集会自动分批翻译并显示进度；
+- 封面来自 `podnews.net` / `storage.buzzsprout.com`，CSP 已放行；浏览器需要能访问封面域，音频本身由服务端代理。
+
+![播客精听：顶部音频 + 左右同步字幕](docs/screenshots/podcast-watch.png)
 
 **边界**：不是每个视频都有字幕或允许嵌入；没有字幕时仍可播放，但不会高亮。字幕读取依赖本机 Node 能访问 YouTube；网络受限时播放器仍可能由浏览器直接加载，但服务端拿不到字幕。嵌入播放器由 YouTube 提供，浏览器会直接连接 Google；本机代理只读取公开视频页与字幕轨。
 
@@ -411,14 +430,15 @@ en_os/
 │  ├─ providers.mjs     # 服务商注册表、OpenAI 兼容 chat、错误归一化
 │  ├─ search.mjs        # 三家原生搜索 + 维基/DDG 兜底 + 原文截取调度
 │  ├─ extract.mjs       # 网页正文抽取、句子边界截取、英文判定、抓取安全限制
-│  └─ youtube.mjs       # YouTube 搜索、captions/timedtext、PoToken 回退、逐词时间轴、模型/免费翻译
+│  ├─ youtube.mjs       # YouTube 搜索、captions/timedtext、PoToken 回退、逐词时间轴、模型/免费翻译
+│  └─ podcasts.mjs      # 播客 RSS、podcast:transcript VTT、音频/单集/词级 cue
 ├─ public/
 │  ├─ index.html        # 学习 SPA
 │  ├─ report.html       # 独立报告页
 │  ├─ videos.html       # 视频工作台：工具栏 + 频道树 + 视频预览 + 对话
 │  ├─ watch.html        # 播放 + 双语逐词字幕页
 │  ├─ css/app.css
-│  ├─ css/studio.css    # 视频工作台布局（rail / tabs / tree / previews / chat）
+│  ├─ css/studio.css    # 视频/播客工作台（rail / tabs / tree / previews / podcast / chat）
 │  └─ js/
 │     ├─ engine.js      # 解析、8 步生成、评分判定、报告汇总、AI 提示词
 │     ├─ scoring.js     # 文本相似度、跟读比对、写作 rubric
@@ -436,7 +456,7 @@ en_os/
 │     ├─ api.js / store.js / speech.js / ui.js / art.js
 │     └─ app.js         # hash 路由
 ├─ data/core100.json    # 100 个雅思核心词句
-├─ tests/               # node:test（68 个测试）
+├─ tests/               # node:test（69 个测试）
 ├─ scripts/             # 校验、CDP 端到端（学习 / 视频）、mock provider
 └─ docs/
 ```
@@ -514,7 +534,7 @@ en_os/
 npm test
 ```
 
-- **68 个测试**：数据完整性、分析、8 步 payload 合法性、阈值判定、报告汇总、AI 覆盖校验、提示词、跟读比对、写作评分、语音指令、模块顺序、网页正文抽取与句子边界截取、听力对话校验 / 成分对齐 / 真实短句 / 本地模板 / 结果文本 / 语音分块偏移、逐词语音队列、语音边界偏移、鼠标取词（分词 / 词形还原 / 本课词表）、YouTube 搜索解析（videoRenderer / lockupViewModel）、timedtext 词级时间轴、PoToken 段落转词级、字幕合并与中英对齐、瞬时登录重试与失败不缓存、免费翻译编号回填、服务端 chat / 流式 / 搜索 / 原文抓取 / 单词释义 / 视频路由 / 安全。
+- **69 个测试**：数据完整性、分析、8 步 payload 合法性、阈值判定、报告汇总、AI 覆盖校验、提示词、跟读比对、写作评分、语音指令、模块顺序、网页正文抽取与句子边界截取、听力对话校验 / 成分对齐 / 真实短句 / 本地模板 / 结果文本 / 语音分块偏移、逐词语音队列、语音边界偏移、鼠标取词（分词 / 词形还原 / 本课词表）、YouTube 搜索解析（videoRenderer / lockupViewModel）、timedtext 词级时间轴、PoToken 段落转词级、字幕合并与中英对齐、瞬时登录重试与失败不缓存、免费翻译编号回填、播客 VTT 时间轴与词级分配、服务端 chat / 流式 / 搜索 / 原文抓取 / 单词释义 / 视频路由 / 安全。
 - 服务端测试会自建 mock provider 与本地文章页，不依赖外网。
 
 真实浏览器端到端：

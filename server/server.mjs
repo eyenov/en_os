@@ -18,6 +18,7 @@ import {
 import { searchWeb } from './search.mjs';
 import { extractFromUrl } from './extract.mjs';
 import { getVideoCaptions, searchYouTube, translateCues, translateCuesFree } from './youtube.mjs';
+import { getPodcastEpisode, listPodcastChannels, listPodcastEpisodes, openPodcastAudio } from './podcasts.mjs';
 
 const ROOT = path.dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -49,11 +50,11 @@ const SECURITY_HEADERS = {
   'X-Frame-Options': 'DENY',
   'Content-Security-Policy': [
     "default-src 'self'",
-    "img-src 'self' data: blob: https://i.ytimg.com https://img.youtube.com",
+    "img-src 'self' data: blob: https://i.ytimg.com https://img.youtube.com https://podnews.net https://storage.buzzsprout.com",
     "style-src 'self' 'unsafe-inline'",
     "script-src 'self' https://www.youtube.com https://s.ytimg.com",
     "connect-src 'self'",
-    "media-src 'self' blob:",
+    "media-src 'self' blob: https://podnews.net https://op3.dev https://www.buzzsprout.com https://audio.buzzsprout.com https://storage.buzzsprout.com",
     "font-src 'self' data:",
     "frame-src https://www.youtube.com https://www.youtube-nocookie.com",
     "base-uri 'self'",
@@ -387,6 +388,51 @@ const server = http.createServer(async (req, res) => {
         if (!allowed.includes(origin)) throw new HttpError(403, '跨站请求被拒绝。', 'BAD_ORIGIN');
       }
       if (rateLimited(ip)) throw new HttpError(429, '请求太频繁，请稍后再试。', 'RATE_LIMIT');
+      if (urlPath === '/api/podcasts/audio') {
+        if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, '该接口只接受 GET。', 'METHOD_NOT_ALLOWED');
+        const { response } = await openPodcastAudio(
+          String(url.searchParams.get('channel') || ''),
+          String(url.searchParams.get('episode') || ''),
+          String(req.headers.range || ''),
+        );
+        const headers = {
+          'Content-Type': response.headers.get('content-type') || 'audio/mpeg',
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'public, max-age=3600',
+        };
+        for (const name of ['content-length', 'content-range', 'last-modified', 'etag']) {
+          const value = response.headers.get(name);
+          if (value) headers[name] = value;
+        }
+        res.writeHead(response.status, headers);
+        if (req.method === 'HEAD' || !response.body) return res.end();
+        Readable.fromWeb(response.body).pipe(res);
+        console.log(`[api] podcast-audio ${res.statusCode} ${Date.now() - started}ms`);
+        return;
+      }
+      if (urlPath === '/api/podcasts/channels') {
+        if (req.method !== 'GET') throw new HttpError(405, '该接口只接受 GET。', 'METHOD_NOT_ALLOWED');
+        sendJSON(res, 200, { channels: listPodcastChannels() });
+        console.log(`[api] podcast-channels ${res.statusCode} ${Date.now() - started}ms`);
+        return;
+      }
+      if (urlPath === '/api/podcasts/episodes') {
+        if (req.method !== 'GET') throw new HttpError(405, '该接口只接受 GET。', 'METHOD_NOT_ALLOWED');
+        const data = await listPodcastEpisodes(String(url.searchParams.get('channel') || ''));
+        sendJSON(res, 200, data);
+        console.log(`[api] podcast-episodes ${res.statusCode} ${Date.now() - started}ms`);
+        return;
+      }
+      if (urlPath === '/api/podcasts/episode') {
+        if (req.method !== 'GET') throw new HttpError(405, '该接口只接受 GET。', 'METHOD_NOT_ALLOWED');
+        const data = await getPodcastEpisode(
+          String(url.searchParams.get('channel') || ''),
+          String(url.searchParams.get('episode') || ''),
+        );
+        sendJSON(res, 200, data);
+        console.log(`[api] podcast-episode ${res.statusCode} ${Date.now() - started}ms`);
+        return;
+      }
       if (urlPath === '/api/chat' || urlPath === '/api/search' || urlPath === '/api/extract' || urlPath === '/api/word'
         || urlPath === '/api/youtube/search' || urlPath === '/api/youtube/captions' || urlPath === '/api/youtube/translate'
         || urlPath === '/api/youtube/translate-free') {

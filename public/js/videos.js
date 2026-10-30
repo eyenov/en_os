@@ -1,5 +1,17 @@
-import { aiReady, chatStream, getHealth, searchVideos } from './api.js';
+import {
+  aiReady,
+  chatStream,
+  fetchVideoCaptions,
+  getHealth,
+  getPodcastChannels,
+  getPodcastEpisode,
+  getPodcastEpisodes,
+  searchVideos,
+  translateVideoCaptions,
+  translateVideoCaptionsFree,
+} from './api.js';
 import { getSettings } from './store.js';
+import { activeCharCount, cueProgress, findCueIndex, findWordIndex, formatTimestamp, normalizeCues } from './subtitle-sync.js';
 import { h, icon, toast } from './ui.js';
 
 const form = document.getElementById('video-search');
@@ -7,13 +19,17 @@ const input = document.getElementById('video-q');
 const results = document.getElementById('video-results');
 const channelList = document.getElementById('channel-list');
 const treeCount = document.getElementById('tree-count');
+const treeEyebrow = document.getElementById('tree-eyebrow');
+const treeTitle = document.getElementById('tree-title');
 const previewTitle = document.getElementById('preview-title');
 const previewSubtitle = document.getElementById('preview-subtitle');
 const previewSource = document.getElementById('preview-source');
-const videosView = document.getElementById('videos-view');
+const mediaView = document.getElementById('media-view');
+const youtubePane = document.getElementById('youtube-pane');
+const podcastPane = document.getElementById('podcast-pane');
 const chatView = document.getElementById('chat-view');
 const tabEmpty = document.getElementById('tab-empty');
-const workspace = document.querySelector('.studio-workspace');
+const workspace = document.getElementById('media-view');
 const treeOpen = document.getElementById('tree-open');
 const treeCollapse = document.getElementById('tree-collapse');
 const railVideos = document.getElementById('rail-videos');
@@ -34,6 +50,78 @@ const state = {
   expanded: new Set(),
   treeCollapsed: false,
   loading: false,
+  detailOpen: false,
+};
+
+const podcast = {
+  initialized: false,
+  loading: false,
+  channels: [],
+  episodes: new Map(),
+  expanded: new Set(),
+  selectedChannel: '',
+  selectedEpisode: null,
+  cues: [],
+  loadingTranscript: false,
+  translating: false,
+  activeCue: -1,
+  activeWord: -1,
+  activeChars: -1,
+  ticker: null,
+  requestSeq: 0,
+  translateSeq: 0,
+};
+
+const podcastCover = document.getElementById('podcast-cover');
+const podcastTitle = document.getElementById('podcast-title');
+const podcastMeta = document.getElementById('podcast-meta');
+const podcastAudio = document.getElementById('podcast-audio');
+const podcastStatus = document.getElementById('podcast-status');
+const podcastTranslate = document.getElementById('podcast-translate');
+const podcastEn = document.getElementById('podcast-en');
+const podcastZh = document.getElementById('podcast-zh');
+let podcastCueEls = [];
+let podcastWordEls = [];
+let podcastCharEls = [];
+
+const videoDetail = document.getElementById('video-detail');
+const detailTitle = document.getElementById('detail-title');
+const detailMeta = document.getElementById('detail-meta');
+const detailBody = document.getElementById('detail-body');
+const detailPlayerMount = document.getElementById('detail-player');
+const detailFallback = document.getElementById('detail-fallback');
+const detailStatus = document.getElementById('detail-status');
+const detailTranslate = document.getElementById('detail-translate');
+const detailExport = document.getElementById('detail-export');
+const detailEn = document.getElementById('detail-en');
+const detailZh = document.getElementById('detail-zh');
+const detailMessages = document.getElementById('detail-messages');
+const detailChatForm = document.getElementById('detail-chat-form');
+const detailChatInput = document.getElementById('detail-chat-input');
+const detailChatSend = document.getElementById('detail-chat-send');
+const detailResize = document.getElementById('detail-resize');
+const detailBack = document.getElementById('detail-back');
+let detailCueEls = [];
+let detailWordEls = [];
+let detailCharEls = [];
+
+const detail = {
+  open: false,
+  item: null,
+  player: null,
+  playerReady: false,
+  cues: [],
+  activeCue: -1,
+  activeWord: -1,
+  activeChars: -1,
+  ticker: null,
+  loading: false,
+  translating: false,
+  requestSeq: 0,
+  translateSeq: 0,
+  chat: [],
+  chatAvailable: false,
+  chatBusy: false,
 };
 
 function setQueryInUrl(query) {
@@ -83,7 +171,12 @@ function previewCard(item) {
   if (item.published) meta.push(item.published);
   if (item.duration) meta.push(item.duration);
 
-  return h('a', { class: 'preview-card', href: watchHref(item), title: item.title },
+  return h('button', {
+    class: 'preview-card',
+    type: 'button',
+    title: item.title,
+    onclick: () => openVideoDetail(item),
+  },
     h('div', { class: 'preview-thumb' },
       image,
       item.duration ? h('span', { class: 'preview-duration' }, item.duration) : null,
@@ -104,6 +197,7 @@ function previewCard(item) {
 }
 
 function renderChannels() {
+  if (state.tab !== 'youtube' || state.view !== 'videos') return;
   channelList.replaceChildren();
   treeCount.textContent = state.items.length
     ? `${state.channels.length} 个频道 · ${state.items.length} 个视频`
@@ -160,7 +254,7 @@ function renderChannels() {
         class: 'tree-video',
         type: 'button',
         title: item.title,
-        onclick: () => { window.location.href = watchHref(item); },
+        onclick: () => openVideoDetail(item),
       }, item.title))));
     }
     channelList.append(node);
@@ -207,6 +301,896 @@ function selectChannel(name) {
   renderChannels();
   renderPreviews();
 }
+
+/* ---------- podcast view ---------- */
+
+function podcastChannelById(id) {
+  return podcast.channels.find((channel) => channel.id === id) || null;
+}
+
+function renderPodcastTree() {
+  if (state.tab !== 'podcast' || state.view !== 'videos') return;
+  channelList.replaceChildren();
+  treeEyebrow.textContent = 'PODCAST CHANNELS';
+  treeTitle.textContent = '播客频道';
+  treeCount.textContent = podcast.channels.length
+    ? `${podcast.channels.length} 个频道 · Podnews 带 VTT 字幕`
+    : podcast.loading ? '正在读取播客频道…' : '暂无播客频道';
+  if (!podcast.channels.length) {
+    channelList.append(h('div', { class: 'tree-empty' }, podcast.loading ? '正在读取播客源…' : '暂时没有可用的播客频道。'));
+    return;
+  }
+
+  for (const channel of podcast.channels) {
+    const episodes = podcast.episodes.get(channel.id) || [];
+    const expanded = podcast.expanded.has(channel.id);
+    const selected = podcast.selectedChannel === channel.id;
+    const row = h('div', { class: 'tree-row' });
+    row.append(h('button', {
+      class: 'tree-caret',
+      type: 'button',
+      title: expanded ? '收起单集' : '展开单集',
+      'aria-label': expanded ? '收起单集' : '展开单集',
+      onclick: () => togglePodcastChannel(channel),
+    }, h('span', { html: icon(expanded ? 'chevronDown' : 'chevronRight', 14) })));
+    row.append(h('button', {
+      class: `tree-main${selected ? ' active' : ''}`,
+      type: 'button',
+      onclick: () => openPodcastChannel(channel, { selectLatest: true }),
+    },
+    h('span', { class: 'tree-avatar' }, initialOf(channel.name)),
+    h('span', { class: 'tree-name' }, channel.name),
+    h('span', { class: 'tree-count' }, episodes.length ? String(episodes.length) : '')));
+    const node = h('div', { class: 'tree-node' }, row);
+    if (expanded && episodes.length) {
+      node.append(h('div', { class: 'tree-sub' }, episodes.map((episode) => h('button', {
+        class: `tree-video${podcast.selectedEpisode?.id === episode.id ? ' active' : ''}`,
+        type: 'button',
+        title: episode.title,
+        onclick: () => openPodcastEpisode(channel, episode),
+      }, episode.title))));
+    }
+    channelList.append(node);
+  }
+}
+
+async function ensurePodcast() {
+  if (podcast.initialized) {
+    renderPodcastTree();
+    return;
+  }
+  if (podcast.loading) return;
+  podcast.loading = true;
+  renderPodcastTree();
+  try {
+    const data = await getPodcastChannels();
+    podcast.channels = Array.isArray(data.channels) ? data.channels : [];
+    podcast.initialized = true;
+    podcast.loading = false;
+    renderPodcastTree();
+    const first = podcast.channels[0];
+    if (first) await openPodcastChannel(first, { selectLatest: true });
+  } catch (error) {
+    podcast.loading = false;
+    podcast.initialized = false;
+    treeCount.textContent = '播客源暂时不可用';
+    channelList.replaceChildren(h('div', { class: 'tree-empty' }, error.message || '无法读取播客频道。'));
+    toast(error.message || '播客源加载失败', 'err', 4200);
+  }
+}
+
+async function togglePodcastChannel(channel) {
+  if (podcast.expanded.has(channel.id)) {
+    podcast.expanded.delete(channel.id);
+    renderPodcastTree();
+    return;
+  }
+  podcast.expanded.add(channel.id);
+  if (!podcast.episodes.has(channel.id)) {
+    treeCount.textContent = `正在读取 ${channel.name}…`;
+    try {
+      const data = await getPodcastEpisodes(channel.id);
+      podcast.episodes.set(channel.id, data.episodes || []);
+    } catch (error) {
+      toast(error.message || '播客单集加载失败', 'err', 4200);
+    }
+  }
+  renderPodcastTree();
+}
+
+async function openPodcastChannel(channel, { selectLatest = false } = {}) {
+  podcast.selectedChannel = channel.id;
+  podcast.expanded.add(channel.id);
+  if (!podcast.episodes.has(channel.id)) {
+    podcast.loading = true;
+    treeCount.textContent = `正在读取 ${channel.name}…`;
+    try {
+      const data = await getPodcastEpisodes(channel.id);
+      podcast.episodes.set(channel.id, data.episodes || []);
+    } catch (error) {
+      podcast.loading = false;
+      toast(error.message || '播客单集加载失败', 'err', 4200);
+      renderPodcastTree();
+      return;
+    }
+    podcast.loading = false;
+  }
+  renderPodcastTree();
+  const episodes = podcast.episodes.get(channel.id) || [];
+  if (selectLatest && episodes.length) {
+    const current = podcast.selectedEpisode;
+    const sameChannel = current && current.channelId === channel.id;
+    if (!sameChannel) await openPodcastEpisode(channel, episodes[0]);
+  }
+}
+
+function setPodcastInfo(channel, episode) {
+  podcastTitle.textContent = episode.title;
+  podcastMeta.textContent = [channel.name, episode.date, episode.duration].filter(Boolean).join(' · ');
+  podcastCover.alt = '';
+  podcastCover.src = episode.image || '';
+  podcastCover.style.visibility = episode.image ? 'visible' : 'hidden';
+  if (podcastAudio.dataset.episode !== episode.id) {
+    podcastAudio.pause();
+    podcastAudio.dataset.episode = episode.id;
+    podcastAudio.src = `/api/podcasts/audio?channel=${encodeURIComponent(channel.id)}&episode=${encodeURIComponent(episode.id)}`;
+    podcastAudio.load();
+  }
+}
+
+async function openPodcastEpisode(channel, episode) {
+  podcast.selectedChannel = channel.id;
+  podcast.selectedEpisode = episode;
+  podcast.expanded.add(channel.id);
+  podcast.translateSeq += 1;
+  podcast.translating = false;
+  renderPodcastTree();
+  setPodcastInfo(channel, episode);
+  podcast.cues = [];
+  podcast.activeCue = -1;
+  podcast.activeWord = -1;
+  podcast.activeChars = -1;
+  podcastCueEls = [];
+  podcastWordEls = [];
+  podcastCharEls = [];
+  podcastEn.replaceChildren();
+  podcastZh.replaceChildren();
+  podcastStatus.textContent = '正在加载播客字幕…';
+  podcastTranslate.classList.add('hidden');
+  const request = ++podcast.requestSeq;
+  try {
+    const data = await getPodcastEpisode(channel.id, episode.id);
+    if (request !== podcast.requestSeq) return;
+    podcast.cues = normalizeCues(data.cues || []);
+    if (!podcast.cues.length) {
+      podcastStatus.textContent = '这一集没有可用字幕';
+      podcastEn.replaceChildren(h('div', { class: 'podcast-empty' }, '没有读到可用的字幕。'));
+      podcastZh.replaceChildren(h('div', { class: 'podcast-empty' }, '换一集试试。'));
+      return;
+    }
+    renderPodcastSubtitles();
+    podcastStatus.textContent = `共 ${podcast.cues.length} 句 · 正在自动翻译中文…`;
+    await translatePodcast();
+  } catch (error) {
+    if (request !== podcast.requestSeq) return;
+    podcastStatus.textContent = '播客字幕加载失败';
+    podcastEn.replaceChildren(h('div', { class: 'podcast-empty' }, error.message || '无法加载字幕。'));
+    podcastZh.replaceChildren(h('div', { class: 'podcast-empty' }, '字幕暂时不可用。'));
+    toast(error.message || '播客字幕加载失败', 'err', 4200);
+  }
+}
+
+function podcastScrollToCue(index) {
+  if (index < 0) return;
+  const pair = podcastCueEls[index];
+  if (!pair) return;
+  for (const [container, element] of [[podcastEn, pair.en], [podcastZh, pair.zh]]) {
+    if (!container || !element) continue;
+    const containerRect = container.getBoundingClientRect();
+    const elementRect = element.getBoundingClientRect();
+    const top = elementRect.top - containerRect.top + container.scrollTop;
+    if (top < container.scrollTop + 8 || top + elementRect.height > container.scrollTop + container.clientHeight - 8) {
+      container.scrollTo({ top: Math.max(0, top - container.clientHeight * 0.3), behavior: 'smooth' });
+    }
+  }
+}
+
+function setPodcastActiveCue(index) {
+  if (index === podcast.activeCue) return;
+  if (podcast.activeCue >= 0) {
+    const pair = podcastCueEls[podcast.activeCue];
+    pair?.en?.classList.remove('active');
+    pair?.zh?.classList.remove('active');
+    podcastWordEls[podcast.activeCue]?.forEach((word) => word.classList.remove('active'));
+    podcastCharEls[podcast.activeCue]?.forEach((char) => char.classList.remove('active'));
+  }
+  podcastCueEls.forEach((pair, cueIndex) => {
+    pair.en?.classList.toggle('past', cueIndex < index);
+    pair.zh?.classList.toggle('past', cueIndex < index);
+  });
+  podcast.activeCue = index;
+  podcast.activeWord = -1;
+  podcast.activeChars = -1;
+  if (index >= 0) {
+    const pair = podcastCueEls[index];
+    pair?.en?.classList.add('active');
+    pair?.zh?.classList.add('active');
+    podcastScrollToCue(index);
+  }
+}
+
+function syncPodcast() {
+  if (!podcast.cues.length) return;
+  const time = Number(podcastAudio.currentTime) || 0;
+  const index = findCueIndex(podcast.cues, time);
+  if (index !== podcast.activeCue) setPodcastActiveCue(index);
+  if (index < 0) return;
+  const cue = podcast.cues[index];
+  const words = cue.words?.length ? cue.words : [];
+  const wordIndex = findWordIndex(words, time);
+  if (wordIndex !== podcast.activeWord) {
+    if (podcast.activeWord >= 0) podcastWordEls[index]?.[podcast.activeWord]?.classList.remove('active');
+    podcast.activeWord = wordIndex;
+    if (wordIndex >= 0) podcastWordEls[index]?.[wordIndex]?.classList.add('active');
+  }
+  const chars = podcastCharEls[index];
+  if (chars?.length) {
+    const count = activeCharCount(cue.zh, cueProgress(cue, time));
+    if (count !== podcast.activeChars) {
+      podcast.activeChars = count;
+      chars.forEach((char, charIndex) => char.classList.toggle('active', charIndex < count));
+    }
+  }
+}
+
+function renderPodcastSubtitles() {
+  podcastEn.replaceChildren();
+  podcastZh.replaceChildren();
+  podcastCueEls = [];
+  podcastWordEls = [];
+  podcastCharEls = [];
+  podcast.activeCue = -1;
+  podcast.activeWord = -1;
+  podcast.activeChars = -1;
+
+  podcast.cues.forEach((cue, index) => {
+    const enRow = h('button', {
+      class: 'podcast-cue',
+      type: 'button',
+      onclick: () => {
+        podcastAudio.currentTime = cue.start;
+        podcastAudio.play().catch(() => {});
+        syncPodcast();
+      },
+    }, h('span', { class: 'podcast-time' }, formatTimestamp(cue.start)));
+    const enLine = h('span', { class: 'podcast-en' });
+    const wordNodes = [];
+    const words = cue.words?.length ? cue.words : [];
+    words.forEach((word, wordIndex) => {
+      const node = h('span', { class: 'word' }, word.text);
+      wordNodes.push(node);
+      enLine.append(node);
+      if (wordIndex < words.length - 1) enLine.append(document.createTextNode(' '));
+    });
+    if (!words.length) enLine.textContent = cue.en;
+    enRow.append(enLine);
+
+    const zhRow = h('button', {
+      class: 'podcast-cue',
+      type: 'button',
+      onclick: () => {
+        podcastAudio.currentTime = cue.start;
+        podcastAudio.play().catch(() => {});
+        syncPodcast();
+      },
+    }, h('span', { class: 'podcast-time' }, formatTimestamp(cue.start)));
+    const zhLine = h('span', { class: 'podcast-zh' });
+    const chars = [];
+    if (cue.zh) {
+      for (const char of Array.from(cue.zh)) {
+        const span = h('span', { class: 'zh-char' }, char === ' ' ? '\u00a0' : char);
+        chars.push(span);
+        zhLine.append(span);
+      }
+    } else {
+      zhLine.textContent = podcast.translating ? '…' : '—';
+    }
+    zhRow.append(zhLine);
+
+    podcastCueEls.push({ en: enRow, zh: zhRow });
+    podcastWordEls.push(wordNodes);
+    podcastCharEls.push(chars);
+    podcastEn.append(enRow);
+    podcastZh.append(zhRow);
+  });
+  syncPodcast();
+}
+
+async function translatePodcast() {
+  if (podcast.translating || !podcast.cues.length) return;
+  podcast.translating = true;
+  podcastTranslate.classList.add('hidden');
+  podcastStatus.textContent = '正在自动翻译中文字幕…';
+  const request = ++podcast.translateSeq;
+  const totalChunks = Math.ceil(podcast.cues.length / 200);
+  try {
+    const settings = getSettings();
+    const useAI = aiReady(settings);
+    let engine = useAI ? 'ai' : 'google';
+    let zh;
+    if (useAI) {
+      try {
+        zh = [];
+        for (let index = 0; index < podcast.cues.length; index += 200) {
+          const part = podcast.cues.slice(index, index + 200);
+          podcastStatus.textContent = `正在翻译中文字幕 ${Math.floor(index / 200) + 1}/${totalChunks}…`;
+          const data = await translateVideoCaptions(`podcast:${podcast.selectedEpisode.id}`, part, { settings });
+          const lines = Array.isArray(data.zh) ? data.zh : [];
+          if (lines.length !== part.length) throw new Error('翻译条数不一致');
+          zh.push(...lines);
+        }
+      } catch {
+        engine = 'google';
+        zh = null;
+      }
+    }
+    if (!zh) {
+      zh = [];
+      for (let index = 0; index < podcast.cues.length; index += 200) {
+        const part = podcast.cues.slice(index, index + 200);
+        podcastStatus.textContent = `正在翻译中文字幕 ${Math.floor(index / 200) + 1}/${totalChunks}…`;
+        const data = await translateVideoCaptionsFree(`podcast:${podcast.selectedEpisode.id}`, part);
+        const lines = Array.isArray(data.zh) ? data.zh : [];
+        if (lines.length !== part.length) throw new Error('翻译条数不一致');
+        zh.push(...lines);
+      }
+    }
+    if (request !== podcast.translateSeq) return;
+    if (!zh.some(Boolean)) throw new Error('翻译结果为空');
+    podcast.cues.forEach((cue, index) => { cue.zh = zh[index] || ''; });
+    renderPodcastSubtitles();
+    podcastStatus.textContent = `共 ${podcast.cues.length} 句 · 英文逐词 · ${engine === 'ai' ? 'AI 中文字幕' : '自动中文字幕'}`;
+    podcastTranslate.classList.add('hidden');
+  } catch (error) {
+    if (request !== podcast.translateSeq) return;
+    podcastStatus.textContent = '中文自动翻译失败';
+    podcastTranslate.classList.remove('hidden');
+    podcastTranslate.textContent = '重试翻译';
+    toast(error.message || '播客字幕翻译失败', 'err', 3600);
+  } finally {
+    if (request === podcast.translateSeq) podcast.translating = false;
+  }
+}
+
+function startPodcastTicker() {
+  stopPodcastTicker();
+  podcast.ticker = setInterval(syncPodcast, 100);
+}
+
+function stopPodcastTicker() {
+  if (podcast.ticker) clearInterval(podcast.ticker);
+  podcast.ticker = null;
+}
+
+podcastAudio.addEventListener('timeupdate', syncPodcast);
+podcastAudio.addEventListener('seeked', syncPodcast);
+podcastAudio.addEventListener('play', startPodcastTicker);
+podcastAudio.addEventListener('pause', () => { stopPodcastTicker(); syncPodcast(); });
+podcastAudio.addEventListener('ended', stopPodcastTicker);
+podcastAudio.addEventListener('error', () => { podcastStatus.textContent = '音频无法播放，请检查网络或代理'; });
+podcastTranslate.addEventListener('click', translatePodcast);
+podcastCover.addEventListener('error', () => { podcastCover.style.visibility = 'hidden'; });
+
+/* ---------- in-pane video detail ---------- */
+
+let youtubeApiPromise = null;
+const DETAIL_WIDTH_KEY = 'enos.detail.left.v1';
+
+function loadYouTubeApi() {
+  if (window.YT?.Player) return Promise.resolve(window.YT);
+  if (youtubeApiPromise) return youtubeApiPromise;
+  youtubeApiPromise = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('播放器脚本加载超时')), 12_000);
+    const previous = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      clearTimeout(timeout);
+      previous?.();
+      resolve(window.YT);
+    };
+    const script = document.createElement('script');
+    script.src = 'https://www.youtube.com/iframe_api';
+    script.async = true;
+    script.onerror = () => {
+      clearTimeout(timeout);
+      reject(new Error('无法加载 YouTube 播放器'));
+    };
+    document.head.append(script);
+  });
+  return youtubeApiPromise;
+}
+
+function detailFallbackShow(message) {
+  detailFallback.classList.remove('hidden');
+  detailFallback.replaceChildren(
+    h('strong', {}, message || '播放器没有加载成功'),
+    h('p', {}, '字幕仍会尝试加载；也可以换一个允许嵌入的视频。'),
+  );
+}
+
+function destroyDetailPlayer() {
+  stopDetailTicker();
+  try { detail.player?.destroy?.(); } catch { /* ignore */ }
+  detail.player = null;
+  detail.playerReady = false;
+  detailPlayerMount.replaceChildren();
+}
+
+function mountDetailPlayer(item) {
+  destroyDetailPlayer();
+  detailFallback.classList.add('hidden');
+  const target = h('div');
+  detailPlayerMount.replaceChildren(target);
+  loadYouTubeApi().then((YT) => {
+    if (!state.detailOpen || detail.item?.id !== item.id) return;
+    detail.player = new YT.Player(target, {
+      videoId: item.id,
+      playerVars: {
+        autoplay: 0, rel: 0, modestbranding: 1, cc_load_policy: 0,
+        playsinline: 1, hl: 'en', origin: window.location.origin, enablejsapi: 1,
+      },
+      events: {
+        onReady: (event) => {
+          detail.playerReady = true;
+          detailFallback.classList.add('hidden');
+          try {
+            event.target.setOption?.('captions', 'track', {});
+            event.target.unloadModule?.('captions');
+            event.target.unloadModule?.('cc');
+          } catch { /* native CC */ }
+        },
+        onStateChange: (event) => {
+          if (event.data === 1) startDetailTicker();
+          else if (event.data === 2 || event.data === 0) {
+            stopDetailTicker();
+            syncDetail();
+          }
+        },
+        onError: (event) => {
+          const blocked = event?.data === 101 || event?.data === 150;
+          detailFallbackShow(blocked ? '上传者不允许嵌入播放' : '播放器没有加载成功');
+        },
+      },
+    });
+  }).catch((error) => detailFallbackShow(error.message));
+}
+
+function openVideoDetail(item) {
+  state.detailOpen = true;
+  detail.item = item;
+  detail.requestSeq += 1;
+  detail.translateSeq += 1;
+  detail.translating = false;
+  detail.cues = [];
+  detail.activeCue = -1;
+  detail.activeWord = -1;
+  detail.activeChars = -1;
+  detailCueEls = [];
+  detailWordEls = [];
+  detailCharEls = [];
+  detailTitle.textContent = item.title;
+  detailMeta.textContent = [item.channel, item.duration, item.views, item.published].filter(Boolean).join(' · ');
+  detailStatus.textContent = '正在加载字幕…';
+  detailTranslate.classList.add('hidden');
+  detailEn.replaceChildren();
+  detailZh.replaceChildren();
+  detail.chat = [];
+  detail.chatBusy = false;
+  renderTabState();
+  mountDetailPlayer(item);
+  loadDetailCaptions(item);
+  setupDetailChat(item);
+  try {
+    const saved = Number(localStorage.getItem(DETAIL_WIDTH_KEY));
+    if (Number.isFinite(saved) && saved >= 36 && saved <= 72) detailBody.style.setProperty('--detail-left', `${saved}%`);
+  } catch { /* ignore */ }
+}
+
+function closeVideoDetail({ restore = true } = {}) {
+  state.detailOpen = false;
+  detail.requestSeq += 1;
+  detail.translateSeq += 1;
+  detail.chatBusy = false;
+  destroyDetailPlayer();
+  detail.item = null;
+  if (restore) renderTabState();
+}
+
+async function loadDetailCaptions(item) {
+  const request = ++detail.requestSeq;
+  detail.loading = true;
+  try {
+    const data = await fetchVideoCaptions(item.id);
+    if (request !== detail.requestSeq) return;
+    detail.loading = false;
+    detail.cues = normalizeCues(data.cues || []);
+    if (!detail.cues.length) {
+      detailStatus.textContent = '这一集视频没有可用字幕';
+      detailEn.replaceChildren(h('div', { class: 'podcast-empty' }, data.reason === 'CAPTION_FETCH_FAILED' ? '字幕接口返回空内容。' : '没有读到可用字幕。'));
+      detailZh.replaceChildren(h('div', { class: 'podcast-empty' }, '换一个带字幕的视频试试。'));
+      return;
+    }
+    renderDetailSubtitles();
+    detailStatus.textContent = `共 ${detail.cues.length} 句 · 正在自动翻译中文…`;
+    translateDetail();
+  } catch (error) {
+    if (request !== detail.requestSeq) return;
+    detail.loading = false;
+    detailStatus.textContent = '字幕加载失败';
+    detailEn.replaceChildren(h('div', { class: 'podcast-empty' }, error.message || '无法加载字幕。'));
+    detailZh.replaceChildren(h('div', { class: 'podcast-empty' }, '字幕暂时不可用。'));
+    toast(error.message || '视频字幕加载失败', 'err', 3600);
+  }
+}
+
+function detailScrollToCue(index) {
+  if (index < 0) return;
+  const pair = detailCueEls[index];
+  if (!pair) return;
+  for (const [container, element] of [[detailEn, pair.en], [detailZh, pair.zh]]) {
+    if (!container || !element) continue;
+    const containerRect = container.getBoundingClientRect();
+    const elementRect = element.getBoundingClientRect();
+    const top = elementRect.top - containerRect.top + container.scrollTop;
+    if (top < container.scrollTop + 6 || top + elementRect.height > container.scrollTop + container.clientHeight - 6) {
+      container.scrollTo({ top: Math.max(0, top - container.clientHeight * 0.3), behavior: 'smooth' });
+    }
+  }
+}
+
+function setDetailActiveCue(index) {
+  if (index === detail.activeCue) return;
+  if (detail.activeCue >= 0) {
+    const pair = detailCueEls[detail.activeCue];
+    pair?.en?.classList.remove('active');
+    pair?.zh?.classList.remove('active');
+    detailWordEls[detail.activeCue]?.forEach((word) => word.classList.remove('active'));
+    detailCharEls[detail.activeCue]?.forEach((char) => char.classList.remove('active'));
+  }
+  detailCueEls.forEach((pair, cueIndex) => {
+    pair.en?.classList.toggle('past', cueIndex < index);
+    pair.zh?.classList.toggle('past', cueIndex < index);
+  });
+  detail.activeCue = index;
+  detail.activeWord = -1;
+  detail.activeChars = -1;
+  if (index >= 0) {
+    const pair = detailCueEls[index];
+    pair?.en?.classList.add('active');
+    pair?.zh?.classList.add('active');
+    detailScrollToCue(index);
+  }
+}
+
+function syncDetail() {
+  if (!detail.cues.length || !detail.playerReady) return;
+  const time = Number(detail.player?.getCurrentTime?.()) || 0;
+  const index = findCueIndex(detail.cues, time);
+  if (index !== detail.activeCue) setDetailActiveCue(index);
+  if (index < 0) return;
+  const cue = detail.cues[index];
+  const words = cue.words || [];
+  const wordIndex = findWordIndex(words, time);
+  if (wordIndex !== detail.activeWord) {
+    if (detail.activeWord >= 0) detailWordEls[index]?.[detail.activeWord]?.classList.remove('active');
+    detail.activeWord = wordIndex;
+    if (wordIndex >= 0) detailWordEls[index]?.[wordIndex]?.classList.add('active');
+  }
+  const chars = detailCharEls[index];
+  if (chars?.length) {
+    const count = activeCharCount(cue.zh, cueProgress(cue, time));
+    if (count !== detail.activeChars) {
+      detail.activeChars = count;
+      chars.forEach((char, charIndex) => char.classList.toggle('active', charIndex < count));
+    }
+  }
+}
+
+function startDetailTicker() {
+  stopDetailTicker();
+  detail.ticker = setInterval(syncDetail, 100);
+}
+
+function stopDetailTicker() {
+  if (detail.ticker) clearInterval(detail.ticker);
+  detail.ticker = null;
+}
+
+function seekDetail(cue) {
+  const index = detail.cues.indexOf(cue);
+  if (index >= 0) setDetailActiveCue(index);
+  if (detail.playerReady && detail.player?.seekTo) {
+    detail.player.seekTo(cue.start, true);
+    detail.player.playVideo?.();
+  }
+}
+
+function renderDetailSubtitles() {
+  detailEn.replaceChildren();
+  detailZh.replaceChildren();
+  detailCueEls = [];
+  detailWordEls = [];
+  detailCharEls = [];
+  detail.activeCue = -1;
+  detail.activeWord = -1;
+  detail.activeChars = -1;
+
+  detail.cues.forEach((cue) => {
+    const enRow = h('button', { class: 'detail-cue', type: 'button', onclick: () => seekDetail(cue) },
+      h('span', { class: 'detail-time' }, formatTimestamp(cue.start)));
+    const enLine = h('span', { class: 'detail-en' });
+    const wordNodes = [];
+    for (const [wordIndex, word] of (cue.words || []).entries()) {
+      const node = h('span', { class: 'word' }, word.text);
+      wordNodes.push(node);
+      enLine.append(node);
+      if (wordIndex < cue.words.length - 1) enLine.append(document.createTextNode(' '));
+    }
+    if (!wordNodes.length) enLine.textContent = cue.en;
+    enRow.append(enLine);
+
+    const zhRow = h('button', { class: 'detail-cue', type: 'button', onclick: () => seekDetail(cue) },
+      h('span', { class: 'detail-time' }, formatTimestamp(cue.start)));
+    const zhLine = h('span', { class: 'detail-zh' });
+    const chars = [];
+    if (cue.zh) {
+      for (const char of Array.from(cue.zh)) {
+        const span = h('span', { class: 'zh-char' }, char === ' ' ? '\u00a0' : char);
+        chars.push(span);
+        zhLine.append(span);
+      }
+    } else {
+      zhLine.textContent = detail.translating ? '…' : '—';
+    }
+    zhRow.append(zhLine);
+    detailCueEls.push({ en: enRow, zh: zhRow });
+    detailWordEls.push(wordNodes);
+    detailCharEls.push(chars);
+    detailEn.append(enRow);
+    detailZh.append(zhRow);
+  });
+  syncDetail();
+}
+
+async function translateDetail() {
+  if (detail.translating || !detail.cues.length || !detail.item) return;
+  detail.translating = true;
+  detailTranslate.classList.add('hidden');
+  detailStatus.textContent = '正在自动翻译中文字幕…';
+  const request = ++detail.translateSeq;
+  const totalChunks = Math.ceil(detail.cues.length / 200);
+  try {
+    const settings = getSettings();
+    const useAI = aiReady(settings);
+    let engine = useAI ? 'ai' : 'google';
+    let zh;
+    if (useAI) {
+      try {
+        zh = [];
+        for (let index = 0; index < detail.cues.length; index += 200) {
+          const part = detail.cues.slice(index, index + 200);
+          detailStatus.textContent = `正在翻译中文字幕 ${Math.floor(index / 200) + 1}/${totalChunks}…`;
+          const data = await translateVideoCaptions(detail.item.id, part, { settings });
+          const lines = Array.isArray(data.zh) ? data.zh : [];
+          if (lines.length !== part.length) throw new Error('翻译条数不一致');
+          zh.push(...lines);
+        }
+      } catch {
+        engine = 'google';
+        zh = null;
+      }
+    }
+    if (!zh) {
+      zh = [];
+      for (let index = 0; index < detail.cues.length; index += 200) {
+        const part = detail.cues.slice(index, index + 200);
+        detailStatus.textContent = `正在翻译中文字幕 ${Math.floor(index / 200) + 1}/${totalChunks}…`;
+        const data = await translateVideoCaptionsFree(detail.item.id, part);
+        const lines = Array.isArray(data.zh) ? data.zh : [];
+        if (lines.length !== part.length) throw new Error('翻译条数不一致');
+        zh.push(...lines);
+      }
+    }
+    if (request !== detail.translateSeq) return;
+    detail.cues.forEach((cue, index) => { cue.zh = zh[index] || ''; });
+    renderDetailSubtitles();
+    detailStatus.textContent = `共 ${detail.cues.length} 句 · 英文逐词 · ${engine === 'ai' ? 'AI 中文字幕' : '自动中文字幕'}`;
+  } catch (error) {
+    if (request !== detail.translateSeq) return;
+    detailStatus.textContent = '中文自动翻译失败';
+    detailTranslate.classList.remove('hidden');
+    detailTranslate.textContent = '重试翻译';
+    toast(error.message || '视频字幕翻译失败', 'err', 3600);
+  } finally {
+    if (request === detail.translateSeq) detail.translating = false;
+  }
+}
+
+function detailChatEmpty() {
+  detailMessages.replaceChildren(h('div', { class: 'detail-empty' },
+    h('strong', {}, detail.chatAvailable ? '问 Agent 这段视频' : '配置 API Key 后开始对话'),
+    detail.chatAvailable ? h('p', {}, '可以问语法、词汇、总结或让 Agent 解释当前句。') : h('p', {}, h('a', { href: '/#/settings' }, '去设置 →')),
+  ));
+}
+
+function detailAddMessage(role, text, options = {}) {
+  const bubble = h('div', { class: `detail-msg ${role}${options.pending ? ' pending' : ''}${options.error ? ' error' : ''}` }, text);
+  detailMessages.append(bubble);
+  detailMessages.scrollTop = detailMessages.scrollHeight;
+  return bubble;
+}
+
+async function setupDetailChat(item) {
+  detail.chat = [];
+  detail.chatAvailable = false;
+  detailChatInput.disabled = true;
+  detailChatSend.disabled = true;
+  detailChatInput.placeholder = '读取 Agent 状态…';
+  detailMessages.replaceChildren(h('div', { class: 'detail-empty' }, '正在检查模型配置…'));
+  await getHealth(true).catch(() => null);
+  if (!state.detailOpen || detail.item?.id !== item.id) return;
+  detail.chatAvailable = aiReady(getSettings());
+  detailChatInput.disabled = !detail.chatAvailable;
+  detailChatSend.disabled = !detail.chatAvailable;
+  detailChatInput.placeholder = detail.chatAvailable ? '问 Agent：解释当前句 / 总结这段视频' : '配置 API Key 后与 Agent 对话';
+  detailChatEmpty();
+}
+
+function detailContext() {
+  const cues = detail.cues;
+  const now = Number(detail.player?.getCurrentTime?.()) || 0;
+  let index = cues.findIndex((cue) => now >= cue.start && now < cue.end);
+  if (index < 0) index = cues.findIndex((cue) => cue.start >= now);
+  if (index < 0) index = Math.max(0, cues.length - 1);
+  const full = cues.map((cue) => `[${formatTimestamp(cue.start)}] ${cue.en}${cue.zh ? ` / ${cue.zh}` : ''}`).join('\n');
+  const transcript = full.length <= 12_000 ? full : `${full.slice(0, 6000)}\n[... omitted ...]\n${full.slice(-3000)}`;
+  const current = cues[index];
+  return [
+    'You are the EnOS video learning agent. Help a Chinese IELTS learner understand a YouTube video.',
+    'Answer in Simplified Chinese unless asked otherwise. Quote the original line when explaining.',
+    `Video: ${detail.item?.title || ''} · ${detail.item?.channel || ''}`,
+    `Current line: ${current ? current.en : '(none)'}`,
+    `Transcript:\n${transcript || '(subtitles still loading)'}`,
+  ].join('\n');
+}
+
+async function sendDetailChat(text) {
+  const question = String(text || '').trim();
+  if (!question || detail.chatBusy || !detail.chatAvailable || !detail.item) return;
+  detail.chatBusy = true;
+  detailChatSend.disabled = true;
+  detailChatInput.value = '';
+  detailMessages.querySelector('.detail-empty')?.remove();
+  detailAddMessage('user', question);
+  detail.chat.push({ role: 'user', content: question });
+  const bubble = detailAddMessage('assistant', '', { pending: true });
+  const itemId = detail.item.id;
+  try {
+    const full = await chatStream({
+      messages: [{ role: 'system', content: detailContext() }, ...detail.chat.slice(-10)],
+      maxTokens: 900,
+      temperature: 0.45,
+      onDelta: (partial) => {
+        if (detail.item?.id !== itemId) return;
+        bubble.classList.remove('pending');
+        bubble.textContent = partial;
+        detailMessages.scrollTop = detailMessages.scrollHeight;
+      },
+    });
+    if (detail.item?.id !== itemId) return;
+    bubble.classList.remove('pending');
+    bubble.textContent = full || '（Agent 没有返回内容）';
+    if (full) detail.chat.push({ role: 'assistant', content: full });
+  } catch (error) {
+    bubble.classList.remove('pending');
+    bubble.classList.add('error');
+    bubble.textContent = `请求失败：${error.message || '请稍后重试'}`;
+  } finally {
+    detail.chatBusy = false;
+    detailChatSend.disabled = false;
+    detailChatInput.focus();
+  }
+}
+
+function bindDetailResize() {
+  let ratio = 58;
+  try {
+    const saved = Number(localStorage.getItem(DETAIL_WIDTH_KEY));
+    if (Number.isFinite(saved) && saved >= 36 && saved <= 72) ratio = saved;
+  } catch { /* ignore */ }
+  detailBody.style.setProperty('--detail-left', `${ratio}%`);
+  const apply = (value, save = true) => {
+    ratio = Math.min(72, Math.max(36, value));
+    detailBody.style.setProperty('--detail-left', `${ratio}%`);
+    if (save) {
+      try { localStorage.setItem(DETAIL_WIDTH_KEY, String(Math.round(ratio))); } catch { /* ignore */ }
+    }
+  };
+  detailResize.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const rect = detailBody.getBoundingClientRect();
+    const startX = event.clientX;
+    const startRatio = ratio;
+    let finished = false;
+    try { detailResize.setPointerCapture(event.pointerId); } catch { /* ignore */ }
+    const move = (moveEvent) => {
+      if (moveEvent.cancelable) moveEvent.preventDefault();
+      const next = startRatio + ((moveEvent.clientX - startX) / rect.width) * 100;
+      apply(next, false);
+    };
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      window.removeEventListener('pointermove', move);
+      apply(ratio, true);
+      try { detailResize.releasePointerCapture(event.pointerId); } catch { /* ignore */ }
+    };
+    window.addEventListener('pointermove', move, { passive: false });
+    window.addEventListener('pointerup', finish, { once: true });
+    window.addEventListener('pointercancel', finish, { once: true });
+  });
+  detailResize.addEventListener('dblclick', () => apply(58));
+}
+
+function exportDetailMarkdown() {
+  if (!detail.item || !detail.cues.length) {
+    toast('还没有可导出的字幕', 'err', 2400);
+    return;
+  }
+  const esc = (value) => String(value || '').replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
+  const title = detail.item.title || 'YouTube video';
+  const lines = [
+    `# ${esc(title)}`,
+    '',
+    `- 频道：${esc(detail.item.channel || '—')}`,
+    `- 视频：https://www.youtube.com/watch?v=${detail.item.id}`,
+    `- 时长：${detail.item.duration || '—'}`,
+    `- 导出：${new Date().toISOString().slice(0, 10)} · EnOS`,
+    '',
+    '## 中英字幕',
+    '',
+    '| 时间 | English | 中文 |',
+    '| --- | --- | --- |',
+    ...detail.cues.map((cue) => `| ${formatTimestamp(cue.start)} | ${esc(cue.en)} | ${esc(cue.zh || '—')} |`),
+    '',
+  ];
+  const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const safe = title.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || detail.item.id;
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `${safe}-bilingual.md`;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  toast('Markdown 已导出', 'ok', 2400);
+}
+
+detailBack.addEventListener('click', () => closeVideoDetail());
+detailTranslate.addEventListener('click', translateDetail);
+detailExport.addEventListener('click', exportDetailMarkdown);
+detailChatForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  sendDetailChat(detailChatInput.value);
+});
+detailChatInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    detailChatForm.requestSubmit();
+  }
+});
+bindDetailResize();
 
 function renderLoading() {
   treeCount.textContent = '正在解析频道…';
@@ -278,26 +1262,36 @@ function setTreeCollapsed(value) {
 }
 
 function updateTreeOpen() {
-  treeOpen.classList.toggle('hidden', !(state.treeCollapsed && state.view === 'videos' && state.tab === 'youtube'));
+  const mediaTab = state.tab === 'youtube' || state.tab === 'podcast';
+  treeOpen.classList.toggle('hidden', !(state.treeCollapsed && state.view === 'videos' && mediaTab));
 }
 
 function renderTabEmpty() {
-  const podcast = state.tab === 'podcast';
   document.getElementById('tab-empty-eyebrow').textContent = 'COMING SOON';
-  document.getElementById('tab-empty-title').textContent = podcast ? '播客暂未接入' : '图书暂未接入';
-  document.getElementById('tab-empty-text').textContent = podcast
-    ? '入口先保留在这里，后续可以接入播客频道与逐句字幕。'
-    : '入口先保留在这里，后续可以接入英文图书与章节精读。';
+  document.getElementById('tab-empty-title').textContent = '图书暂未接入';
+  document.getElementById('tab-empty-text').textContent = '入口先保留在这里，后续可以接入英文图书与章节精读。';
 }
 
 function renderTabState() {
   const youtube = state.tab === 'youtube';
-  const showVideos = state.view === 'videos' && youtube;
-  const showEmpty = state.view === 'videos' && !youtube;
-  videosView.classList.toggle('hidden', !showVideos);
+  const podcastTab = state.tab === 'podcast';
+  const showMedia = state.view === 'videos' && (youtube || podcastTab);
+  const showEmpty = state.view === 'videos' && !youtube && !podcastTab;
+  const showDetail = showMedia && youtube && state.detailOpen;
+  mediaView.classList.toggle('hidden', !showMedia);
+  youtubePane.classList.toggle('hidden', !(showMedia && youtube && !showDetail));
+  videoDetail.classList.toggle('hidden', !showDetail);
+  podcastPane.classList.toggle('hidden', !(showMedia && podcastTab));
   tabEmpty.classList.toggle('hidden', !showEmpty);
   if (showEmpty) renderTabEmpty();
+  if (showMedia) {
+    treeEyebrow.textContent = youtube ? 'CHANNELS' : 'PODCAST CHANNELS';
+    treeTitle.textContent = youtube ? '频道' : '播客频道';
+    if (youtube) renderChannels();
+    else renderPodcastTree();
+  }
   updateTreeOpen();
+  if (podcastTab) ensurePodcast();
 }
 
 function setView(view) {
@@ -308,8 +1302,10 @@ function setView(view) {
   railVideos.setAttribute('aria-current', videos ? 'page' : 'false');
   chatView.classList.toggle('hidden', videos);
   if (!videos) {
-    videosView.classList.add('hidden');
+    mediaView.classList.add('hidden');
     tabEmpty.classList.add('hidden');
+    podcastAudio.pause();
+    if (state.detailOpen) closeVideoDetail({ restore: false });
     ensureChat();
     updateTreeOpen();
     return;
@@ -318,6 +1314,8 @@ function setView(view) {
 }
 
 function setTab(tab) {
+  if (state.tab === 'podcast' && tab !== 'podcast') podcastAudio.pause();
+  if (state.tab === 'youtube' && tab !== 'youtube' && state.detailOpen) closeVideoDetail({ restore: false });
   state.tab = tab;
   for (const button of document.querySelectorAll('.studio-tab')) {
     const active = button.dataset.tab === tab;

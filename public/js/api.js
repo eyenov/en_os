@@ -230,6 +230,24 @@ export async function translateVideoCaptionsFree(videoId, cues) {
   return response.json();
 }
 
+export async function getPodcastChannels() {
+  const response = await fetch('/api/podcasts/channels', { headers: { Accept: 'application/json' } });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}
+
+export async function getPodcastEpisodes(channel) {
+  const response = await fetch(`/api/podcasts/episodes?channel=${encodeURIComponent(channel)}`, { headers: { Accept: 'application/json' } });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}
+
+export async function getPodcastEpisode(channel, episode) {
+  const response = await fetch(`/api/podcasts/episode?channel=${encodeURIComponent(channel)}&episode=${encodeURIComponent(episode)}`, { headers: { Accept: 'application/json' } });
+  if (!response.ok) throw await parseError(response);
+  return response.json();
+}
+
 export async function testConnection(settings = getSettings()) {
   const started = performance.now();
   const data = await chat({

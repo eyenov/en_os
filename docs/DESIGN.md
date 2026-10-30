@@ -388,6 +388,31 @@ YouTube 的机器人验证是**瞬时**的：同一个视频可能第一次 `LOG
 - 最左 76px 工具栏只保留 **视频 / 对话**；旧的学习、听力、报告、设置入口不进入这个工作台；
 - 顶部 42px 标签条：**YouTube / 播客 / 图书**；播客与图书暂未接入，只显示占位；
 - 视频视图 = 250px 频道导航树 + 右侧预览。导航树可整体收起（`≤ 0px` 列宽，标签条出现“频道”按钮恢复），频道节点也可展开视频子列表；
-- 预览卡片使用真实缩略图与 `title / channel / description / views / published / duration / CC`，点击进入 `/watch.html`；
+- 预览卡片使用真实缩略图与 `title / channel / description / views / published / duration / CC`；
+- 点击预览不再跳旧 `/watch.html`，而是在右侧内容区切到 in-pane detail：左上 YouTube iframe（中间拖动分割线调整宽度，保持 16:9），下面 Agent，右侧 English / 中文两列字幕；「← 视频列表」返回；
 - 频道从搜索结果按 `channel` 分组，选频道即时过滤右侧；搜索框复用 `/api/youtube/search`；
 - 对话视图是独立 chat shell，消息区滚动、输入框固定底部；未配置模型 Key 时显示设置入口。
+
+---
+
+## 17. 播客管线
+
+播客资源使用两个公开的 Podcasting 2.0 源，RSS 中同时有音频 enclosure 和 `podcast:transcript` WebVTT：
+
+- Podnews Daily：`https://podnews.net/rss`
+- Podnews Weekly Review：`https://feeds.buzzsprout.com/1538779.rss`
+
+服务端 `server/podcasts.mjs`：
+
+1. 拉取 RSS，按 `<item>` 提取 `title / description / pubDate / itunes:duration / itunes:image`；
+2. 只保留同时有音频和 `text/vtt` transcript 的 episode，最多 24 集/频道；
+3. `GET /api/podcasts/channels` 返回频道元数据；`GET /api/podcasts/episodes?channel=` 返回单集；`GET /api/podcasts/episode?channel=&episode=` 拉取 VTT 并解析；
+4. VTT 解析支持 `HH:MM:SS.mmm` / `MM:SS.mmm`，跳过 cue 标识与 `<v>` 标签，短 cue 合并到 ≤120 字符 / 12 秒，再按词长分配词级时间；
+5. feed 缓存 10 分钟、VTT 缓存 30 分钟；音频经 `/api/podcasts/audio` 以 Range 流式代理（转发 `Range / Content-Range / Content-Length`，使用宽松 UA 避免 Buzzsprout 拒绝 Chrome UA），浏览器只访问同源地址；`img-src` 放行封面域。
+
+前端播客视图：
+
+- 左侧频道树复用工作台树：频道节点可展开 episode 子列表，选中单集；
+- 右侧顶部原生 `<audio controls>`，显示封面、标题、频道/日期/时长；
+- 下方 English / 中文两列独立滚动，使用与视频页相同的 `normalizeCues / findCueIndex / findWordIndex / activeCharCount`，按音频 `currentTime` 做词级/逐字高亮；
+- 点击字幕 seek 音频；中文复用视频翻译接口；长单集按 200 句分块并显示进度。
