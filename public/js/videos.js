@@ -1311,7 +1311,9 @@ function openVideoDetail(item) {
   detailWordEls = [];
   detailCharEls = [];
   detailTitle.textContent = item.title;
+  detailTitle.title = item.title;
   detailMeta.textContent = [item.channel, item.duration, item.views, item.published].filter(Boolean).join(' · ');
+  detailMeta.title = detailMeta.textContent;
   detailStatus.textContent = '正在加载字幕…';
   detailTranslate.classList.add('hidden');
   detailEn.replaceChildren();

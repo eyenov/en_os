@@ -243,6 +243,85 @@ async function main() {
     await sleep(400);
     await cdp.screenshot('video-results.png', true);
 
+    console.log('3a. compact in-pane video detail');
+    await cdp.evaluate(`(() => {
+      const originalFetch = window.fetch;
+      window.fetch = (resource, options) => {
+        if (resource !== '/api/youtube/captions') return originalFetch.call(window, resource, options);
+        window.fetch = originalFetch;
+        return Promise.resolve(new Response(JSON.stringify({ cues: ${JSON.stringify(CUES)} }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      };
+      window.YT = { Player: class {
+        constructor(mount, options) {
+          this.time = 0;
+          this.events = options.events;
+          mount.style.cssText = 'width:100%;height:100%';
+          const image = document.createElement('img');
+          image.src = ${JSON.stringify(POSTER)};
+          image.alt = 'Video fixture';
+          image.style.cssText = 'width:100%;height:100%;display:block;object-fit:cover';
+          mount.replaceChildren(image);
+          queueMicrotask(() => this.events.onReady({ target: this }));
+        }
+        getCurrentTime() { return this.time; }
+        seekTo(time) { this.time = time; }
+        playVideo() { this.events.onStateChange({ data: 1 }); }
+        destroy() {}
+      } };
+      localStorage.removeItem('enos.detail.left.v1');
+      document.querySelector('#video-results .preview-title').click();
+    })()`);
+    await cdp.waitFor(`!document.getElementById('video-detail').classList.contains('hidden') && document.querySelectorAll('#detail-en .detail-cue').length === ${CUES.length}`);
+    await cdp.waitFor(`document.querySelector('#detail-player img')?.naturalWidth > 0`);
+    const detailChecks = await cdp.evaluate(`(() => {
+      const bounds = (selector) => document.querySelector(selector).getBoundingClientRect();
+      const header = bounds('.detail-head');
+      const title = bounds('#detail-title');
+      const meta = bounds('#detail-meta');
+      const player = bounds('.detail-player-shell');
+      const subtitles = bounds('.detail-sub-columns');
+      const detail = bounds('#video-detail');
+      const body = document.getElementById('detail-body');
+      return {
+        compactHeader: header.height <= 46,
+        inlineMetadata: meta.width > 0 && meta.left >= title.right && Math.abs(meta.bottom - title.bottom) <= 4 && parseFloat(getComputedStyle(document.getElementById('detail-meta')).fontSize) < parseFloat(getComputedStyle(document.getElementById('detail-title')).fontSize),
+        tightMargins: player.top - header.bottom <= 9 && player.left - detail.left <= 11,
+        labelsRemoved: !document.querySelector('.detail-col-title'),
+        subtitleAlignment: ${MOBILE} ? true : Math.abs(player.top - subtitles.top) <= 1,
+        playerRatio: Math.abs(player.width / player.height - 16 / 9) < 0.02,
+        noOverflow: document.documentElement.scrollWidth <= innerWidth + 1 && body.scrollWidth <= body.clientWidth + 1,
+      };
+    })()`);
+    await cdp.screenshot(MOBILE ? 'video-detail-mobile.png' : 'video-detail.png');
+    const originalDetailTitle = await cdp.evaluate(`document.getElementById('detail-title').textContent`);
+    await cdp.evaluate(`document.getElementById('detail-title').textContent = 'How everyday choices transform our cities: an extended conversation about trees, public transport and the future of neighbourhoods'`);
+    const detailSizes = MOBILE
+      ? [{ width: 320, height: 568 }]
+      : [{ width: 1024, height: 768 }, { width: 768, height: 1024 }];
+    detailChecks.responsiveLayout = true;
+    for (const size of detailSizes) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', { ...VIEWPORT, ...size, screenWidth: size.width, screenHeight: size.height });
+      const fits = await cdp.evaluate(`(() => {
+        const header = document.querySelector('.detail-head').getBoundingClientRect();
+        const title = document.getElementById('detail-title');
+        const meta = document.getElementById('detail-meta').getBoundingClientRect();
+        const player = document.querySelector('.detail-player-shell').getBoundingClientRect();
+        const subtitles = document.querySelector('.detail-sub-columns').getBoundingClientRect();
+        const body = document.getElementById('detail-body');
+        return header.height <= 46 && title.scrollHeight <= title.clientHeight + 1 && meta.width > 0 && meta.left >= title.getBoundingClientRect().right && document.documentElement.scrollWidth <= innerWidth + 1 && body.scrollWidth <= body.clientWidth + 1 && (innerWidth <= 600 || Math.abs(player.top - subtitles.top) <= 1);
+      })()`);
+      detailChecks.responsiveLayout = detailChecks.responsiveLayout && fits;
+      await cdp.screenshot('video-detail-' + size.width + '.png');
+    }
+    await cdp.evaluate(`document.getElementById('detail-title').textContent = ${JSON.stringify(originalDetailTitle)}`);
+    await cdp.send('Emulation.setDeviceMetricsOverride', VIEWPORT);
+    await cdp.evaluate(`document.querySelectorAll('#detail-en .detail-cue')[1].click()`);
+    await cdp.waitFor(`document.querySelectorAll('#detail-en .detail-cue')[1].classList.contains('active') && document.querySelectorAll('#detail-en .word.active').length > 0`);
+    detailChecks.subtitleSeeking = await cdp.evaluate(`document.querySelectorAll('#detail-zh .detail-cue')[1].classList.contains('active') && document.querySelectorAll('#detail-en .word.active').length > 0`);
+    await cdp.evaluate(`document.getElementById('detail-back').click()`);
+    detailChecks.returnsToList = await cdp.evaluate(`document.getElementById('video-detail').classList.contains('hidden') && !document.getElementById('youtube-pane').classList.contains('hidden')`);
+    console.log('  detail', JSON.stringify(detailChecks));
+
     console.log('4. podcast audio clock and controls');
     await cdp.evaluate(`localStorage.removeItem('enos.podcast.offset.v1.clock-fixture.clock-episode')`);
     await cdp.evaluate(`(() => {
@@ -505,8 +584,10 @@ async function main() {
         && state.scrollWidth <= state.innerWidth + 1
         && Object.entries(podcastChecks).every(([key, value]) => key === 'title' || value === true)
         && Object.values(booksChecks).every((value) => value === true)
+        && Object.values(detailChecks).every((value) => value === true)
         && Object.values(workspaceChecks).every((value) => value === true),
       workspace: workspaceChecks,
+      detail: detailChecks,
       podcast: podcastChecks,
       books: booksChecks,
       state,
