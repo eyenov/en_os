@@ -11,6 +11,7 @@
     "validate": "node scripts/validate-data.mjs",
     "smoke": "node scripts/browser-check.mjs",
     "smoke:video": "node scripts/video-check.mjs",
+    "icons": "node scripts/generate-icons.mjs",
     "mock": "node scripts/mock-provider.mjs",
     "audit": "node scripts/overflow-check.mjs"
   },
