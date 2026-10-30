@@ -83,3 +83,18 @@ export function formatTimestamp(seconds = 0) {
   const rest = whole % 60;
   return `${minutes}:${String(rest).padStart(2, '0')}`;
 }
+
+export function serializeSrt(rawCues = []) {
+  const timestamp = (seconds) => {
+    const total = Math.max(0, Math.round(seconds * 1000));
+    const hours = String(Math.floor(total / 3600000)).padStart(2, '0');
+    const minutes = String(Math.floor(total / 60000) % 60).padStart(2, '0');
+    const whole = String(Math.floor(total / 1000) % 60).padStart(2, '0');
+    const milliseconds = String(total % 1000).padStart(3, '0');
+    return `${hours}:${minutes}:${whole},${milliseconds}`;
+  };
+  return normalizeCues(rawCues)
+    .filter((cue) => cue.en || cue.zh)
+    .map((cue, index) => `${index + 1}\n${timestamp(cue.start)} --> ${timestamp(cue.end)}\n${[cue.en, cue.zh].filter(Boolean).join('\n')}\n`)
+    .join('\n');
+}

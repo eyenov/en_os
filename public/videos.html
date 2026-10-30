@@ -17,13 +17,12 @@
   <div class="studio-shell">
     <aside class="studio-rail" aria-label="主导航">
       <nav class="studio-rail-nav">
-        <button class="rail-btn active" id="rail-videos" type="button" aria-current="page">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="5" width="18" height="14" rx="3"/>
-            <path d="M10 9.5l5 2.5-5 2.5z" fill="currentColor" stroke="none"/>
-          </svg>
-          <span>资料库</span>
-        </button>
+        <div class="studio-media-tabs" role="tablist" aria-label="内容类型" aria-orientation="vertical">
+          <button class="rail-btn studio-tab active" id="tab-youtube" type="button" role="tab" title="YouTube" aria-selected="true" aria-current="page" aria-controls="youtube-pane" data-tab="youtube"><span data-icon="play"></span><span>YouTube</span></button>
+          <button class="rail-btn studio-tab" id="tab-podcast" type="button" role="tab" title="播客" aria-selected="false" aria-controls="podcast-pane" data-tab="podcast" tabindex="-1"><span data-icon="headphones"></span><span>播客</span></button>
+          <button class="rail-btn studio-tab" id="tab-books" type="button" role="tab" title="图书" aria-selected="false" aria-controls="books-pane" data-tab="books" tabindex="-1"><span data-icon="book"></span><span>图书</span></button>
+        </div>
+        <button class="rail-btn tree-open-btn hidden" id="tree-open" type="button" aria-label="打开频道导航" aria-controls="channel-tree" aria-expanded="false" title="打开频道导航"><span data-icon="chevronRight"></span><span>频道</span></button>
         <button class="rail-btn" id="rail-chat" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M20.5 11.5a7.5 7.5 0 0 1-7.5 7.5H8l-4 2v-5.2a7.5 7.5 0 0 1-1-3.8A7.5 7.5 0 0 1 10.5 4h2.5a7.5 7.5 0 0 1 7.5 7.5z"/>
@@ -36,14 +35,6 @@
     </aside>
 
     <div class="studio-main">
-      <header class="studio-tabs" role="tablist" aria-label="内容类型">
-        <button class="studio-tab active" id="tab-youtube" type="button" role="tab" aria-selected="true" aria-controls="youtube-pane" data-tab="youtube"><span data-icon="play"></span>YouTube</button>
-        <button class="studio-tab" id="tab-podcast" type="button" role="tab" aria-selected="false" aria-controls="podcast-pane" data-tab="podcast"><span data-icon="headphones"></span>播客</button>
-        <button class="studio-tab" id="tab-books" type="button" role="tab" aria-selected="false" aria-controls="books-pane" data-tab="books"><span data-icon="book"></span>图书</button>
-        <span class="studio-tabs-spacer"></span>
-        <button class="tree-open-btn hidden" id="tree-open" type="button" aria-label="打开频道导航" aria-controls="channel-tree" aria-expanded="false" title="打开频道导航"><span data-icon="chevronRight"></span><span>频道</span></button>
-      </header>
-
       <section class="studio-workspace" id="media-view" tabindex="-1">
         <aside class="channel-tree" id="channel-tree" aria-label="频道与内容导航">
           <div class="tree-head">
@@ -80,52 +71,40 @@
         </section>
 
         <section class="podcast-pane hidden" id="podcast-pane" aria-labelledby="tab-podcast">
-          <div class="podcast-top">
-            <div class="podcast-cover-wrap">
-              <span class="podcast-cover-placeholder" data-icon="headphones" aria-hidden="true"></span>
-              <img id="podcast-cover" alt="" />
+          <header class="podcast-top">
+            <h1 id="podcast-title">播客</h1>
+            <div class="podcast-title-actions">
+              <button class="studio-icon-button" id="podcast-details" type="button" title="详情信息" aria-label="详情信息" aria-haspopup="dialog" disabled><span data-icon="info"></span></button>
+              <details class="sync-settings" id="podcast-sync-settings">
+                <summary class="studio-icon-button" title="播放设置" aria-label="播放设置"><span data-icon="settings"></span></summary>
+                <div class="sync-popover">
+                  <label class="follow-control"><input id="podcast-follow" type="checkbox" checked /><span>跟随播放</span></label>
+                  <label for="podcast-offset">字幕延迟（秒）</label>
+                  <div class="sync-offset-row"><input id="podcast-offset" type="number" min="-3" max="3" step="0.05" value="0" title="正值延后字幕，负值提前字幕" /><button class="studio-icon-button" id="podcast-offset-reset" type="button" title="重置字幕延迟" aria-label="重置字幕延迟"><span data-icon="refresh"></span></button></div>
+                  <button class="btn btn-soft btn-sm hidden" id="podcast-translate" type="button">重试翻译</button>
+                </div>
+              </details>
+              <button class="studio-icon-button podcast-download" id="podcast-download" type="button" title="下载双语字幕（SRT）" aria-label="下载双语字幕" disabled><span data-icon="download"></span></button>
             </div>
-            <div class="podcast-info">
-              <div class="podcast-labels"><p class="eyebrow">PODCAST / 精听</p><span class="podcast-audio-state" id="podcast-audio-state">尚未选择单集</span></div>
-              <h1 id="podcast-title">播客</h1>
-              <p id="podcast-meta"></p>
-              <p id="podcast-desc" class="podcast-desc"></p>
-            </div>
-            <a class="studio-icon-button podcast-download hidden" id="podcast-download" title="下载本集音频" aria-label="下载本集音频"><span data-icon="download"></span></a>
-          </div>
+          </header>
           <div class="podcast-player" id="podcast-player">
+            <span class="sr-only" id="podcast-audio-state" role="status">尚未选择单集</span>
             <div class="podcast-transport">
               <button class="studio-icon-button" id="podcast-prev" type="button" title="上一句" aria-label="上一句" disabled><span data-icon="arrowLeft"></span></button>
               <button class="podcast-play" id="podcast-play" type="button" title="播放" aria-label="播放" disabled><span data-icon="play"></span></button>
               <button class="studio-icon-button" id="podcast-next" type="button" title="下一句" aria-label="下一句" disabled><span data-icon="arrowRight"></span></button>
             </div>
-            <span class="podcast-time" id="podcast-current">0:00</span>
+            <div class="podcast-clock"><span class="podcast-time" id="podcast-current">0:00</span><span aria-hidden="true">/</span><span class="podcast-time" id="podcast-duration">0:00</span></div>
             <div class="podcast-wave-wrap">
               <canvas id="podcast-wave" role="slider" tabindex="0" aria-label="播放进度"></canvas>
             </div>
-            <span class="podcast-time" id="podcast-duration">0:00</span>
             <label class="podcast-speed" title="播放速度"><span class="sr-only">播放速度</span><select id="podcast-speed"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
             <button class="studio-icon-button podcast-repeat" id="podcast-repeat" type="button" title="重听当前句" aria-label="重听当前句" disabled><span data-icon="refresh"></span></button>
             <audio id="podcast-audio" preload="metadata"></audio>
           </div>
           <div class="podcast-subtitles">
-            <div class="podcast-sub-head">
-              <div class="podcast-sub-heading">
-                <div class="podcast-sub-title"><h2>双语字幕</h2><span id="podcast-position" class="podcast-position">00 / 00</span></div>
-                <p id="podcast-status" role="status">正在准备字幕</p>
-              </div>
-              <div class="podcast-sub-tools">
-                <button class="btn btn-soft btn-sm hidden" id="podcast-translate" type="button">重试翻译</button>
-                <label class="follow-control"><input id="podcast-follow" type="checkbox" checked /><span>跟随播放</span></label>
-                <details class="sync-settings" id="podcast-sync-settings">
-                  <summary class="studio-icon-button" title="字幕时间校准" aria-label="字幕时间校准"><span data-icon="settings"></span></summary>
-                  <div class="sync-popover">
-                    <label for="podcast-offset">字幕延迟（秒）</label>
-                    <div class="sync-offset-row"><input id="podcast-offset" type="number" min="-3" max="3" step="0.05" value="0" title="正值延后字幕，负值提前字幕" /><button class="studio-icon-button" id="podcast-offset-reset" type="button" title="重置字幕延迟" aria-label="重置字幕延迟"><span data-icon="refresh"></span></button></div>
-                  </div>
-                </details>
-              </div>
-            </div>
+            <span id="podcast-position" class="sr-only">00 / 00</span>
+            <p id="podcast-status" class="sr-only" role="status">正在准备字幕</p>
             <div class="podcast-sub-columns">
               <div class="podcast-col">
                 <div class="podcast-col-title"><span>ENGLISH</span><span class="podcast-col-note">原文</span></div>
@@ -180,15 +159,8 @@
           </div>
         </section>
 
-        <section class="books-pane hidden" id="books-pane">
-          <div class="books-head">
-            <div>
-              <p class="eyebrow">LIBRARY</p>
-              <h1>英语外刊</h1>
-              <p id="books-subtitle">正在读取 GitHub 图书目录…</p>
-            </div>
-            <a class="books-source" href="https://github.com/hehonghui/awesome-english-ebooks" target="_blank" rel="noopener noreferrer">GitHub 源 ↗</a>
-          </div>
+        <section class="books-pane hidden" id="books-pane" aria-labelledby="tab-books">
+          <p id="books-subtitle" class="sr-only" role="status">正在读取 GitHub 图书目录…</p>
           <div class="books-grid" id="books-grid" aria-live="polite"></div>
         </section>
 
@@ -236,6 +208,10 @@
 
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
   <div id="modal-root"></div>
+  <dialog class="podcast-details-dialog" id="podcast-details-dialog" aria-labelledby="podcast-details-title">
+    <div class="podcast-details-head"><h2 id="podcast-details-title">单集详情</h2><button class="studio-icon-button" id="podcast-details-close" type="button" title="关闭详情" aria-label="关闭详情" autofocus><span data-icon="close"></span></button></div>
+    <div class="podcast-details-content" id="podcast-details-content"></div>
+  </dialog>
   <script type="module" src="/js/videos.js"></script>
 </body>
 </html>

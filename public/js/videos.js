@@ -14,7 +14,7 @@ import {
   translateVideoCaptionsFree,
 } from './api.js';
 import { getSettings } from './store.js';
-import { activeCharCount, cueProgress, findCueIndex, findWordIndex, formatTimestamp, normalizeCues } from './subtitle-sync.js';
+import { activeCharCount, cueProgress, findCueIndex, findWordIndex, formatTimestamp, normalizeCues, serializeSrt } from './subtitle-sync.js';
 import { h, icon, toast } from './ui.js';
 import { renderSettings } from './views/settings.js';
 
@@ -36,7 +36,6 @@ const tabEmpty = document.getElementById('tab-empty');
 const workspace = document.getElementById('media-view');
 const treeOpen = document.getElementById('tree-open');
 const treeCollapse = document.getElementById('tree-collapse');
-const railVideos = document.getElementById('rail-videos');
 const railChat = document.getElementById('rail-chat');
 const railSettings = document.getElementById('rail-settings');
 const settingsView = document.getElementById('settings-view');
@@ -101,10 +100,7 @@ const podcast = {
   waveValues: [],
 };
 
-const podcastCover = document.getElementById('podcast-cover');
 const podcastTitle = document.getElementById('podcast-title');
-const podcastMeta = document.getElementById('podcast-meta');
-const podcastDesc = document.getElementById('podcast-desc');
 const podcastAudio = document.getElementById('podcast-audio');
 const podcastPlay = document.getElementById('podcast-play');
 const podcastWave = document.getElementById('podcast-wave');
@@ -118,6 +114,8 @@ const podcastOffset = document.getElementById('podcast-offset');
 const podcastPosition = document.getElementById('podcast-position');
 const podcastAudioState = document.getElementById('podcast-audio-state');
 const podcastDownload = document.getElementById('podcast-download');
+const podcastDetails = document.getElementById('podcast-details');
+const podcastDetailsDialog = document.getElementById('podcast-details-dialog');
 const podcastPrev = document.getElementById('podcast-prev');
 const podcastNext = document.getElementById('podcast-next');
 const podcastRepeat = document.getElementById('podcast-repeat');
@@ -556,18 +554,12 @@ async function openPodcastChannel(channel, { selectLatest = false } = {}) {
 function setPodcastInfo(channel, episode) {
   podcastTitle.textContent = episode.title;
   podcastTitle.title = episode.title;
-  podcastMeta.textContent = [channel.name, episode.date, episode.duration].filter(Boolean).join(' · ');
-  podcastDesc.textContent = episode.description || '';
   podcastCurrent.textContent = '0:00';
   podcastDuration.textContent = episode.duration || '0:00';
   podcast.waveValues = [];
-  podcastCover.alt = `${channel.name} 封面`;
-  if (episode.image) podcastCover.src = episode.image;
-  else podcastCover.removeAttribute('src');
-  podcastCover.style.visibility = episode.image ? 'visible' : 'hidden';
   podcastPlay.disabled = false;
-  podcastDownload.href = `/api/podcasts/audio?channel=${encodeURIComponent(channel.id)}&episode=${encodeURIComponent(episode.id)}&download=1`;
-  podcastDownload.classList.remove('hidden');
+  podcastDetails.disabled = false;
+  podcastDownload.disabled = true;
   podcast.offset = 0;
   try { podcast.offset = Math.max(-3, Math.min(3, Number(localStorage.getItem(podcastOffsetKey())) || 0)); } catch {}
   podcastOffset.value = String(podcast.offset);
@@ -579,6 +571,50 @@ function setPodcastInfo(channel, episode) {
     drawPodcastWave();
   }
   updatePodcastPlayButton();
+}
+
+function showPodcastDetails() {
+  const episode = podcast.selectedEpisode;
+  const channel = podcastChannelById(podcast.selectedChannel);
+  if (!episode || !channel) return;
+  const links = [];
+  for (const [label, value] of [['播客网站', episode.link || channel.site], ['音频地址', episode.audio]]) {
+    if (!value) continue;
+    try {
+      const url = new URL(value);
+      if (!['https:', 'http:'].includes(url.protocol)) continue;
+      links.push(h('div', {}, h('span', {}, label), h('a', { href: url.href, target: '_blank', rel: 'noopener noreferrer' }, url.href)));
+    } catch {}
+  }
+  const metadata = [['频道', channel.name], ['日期', episode.date], ['时长', episode.duration]];
+  document.getElementById('podcast-details-title').textContent = episode.title;
+  document.getElementById('podcast-details-content').replaceChildren(
+    h('div', { class: 'podcast-detail-summary' },
+      episode.image ? h('img', { class: 'podcast-detail-cover', src: episode.image, alt: `${channel.name} 封面`, onerror: (event) => { event.target.hidden = true; } }) : null,
+      h('dl', { class: 'podcast-detail-meta' }, metadata.filter(([, value]) => value).map(([label, value]) => h('div', {}, h('dt', {}, label), h('dd', {}, value)))),
+    ),
+    episode.subtitle ? h('p', { class: 'podcast-detail-subtitle' }, episode.subtitle) : null,
+    episode.description ? h('p', { class: 'podcast-detail-description' }, episode.description) : null,
+    h('div', { class: 'podcast-detail-links' }, links),
+    h('a', {
+      class: 'btn btn-soft btn-sm',
+      href: `/api/podcasts/audio?channel=${encodeURIComponent(channel.id)}&episode=${encodeURIComponent(episode.id)}&download=1`,
+    }, h('span', { html: icon('download', 15) }), '下载本集音频'),
+  );
+  podcastDetailsDialog.showModal();
+}
+
+function downloadPodcastSubtitles() {
+  const content = serializeSrt(podcast.cues);
+  if (!content) return;
+  const blob = new Blob(['\uFEFF', content], { type: 'application/x-subrip;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const name = String(podcast.selectedEpisode?.title || 'podcast').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').slice(0, 120);
+  const anchor = h('a', { href: url, download: `${name}.srt` });
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function openPodcastEpisode(channel, episode) {
@@ -726,7 +762,7 @@ function renderPodcastSubtitles() {
   podcast.activeCue = -1;
   podcast.activeWord = -1;
   podcast.activeChars = -1;
-  for (const button of [podcastPrev, podcastNext, podcastRepeat]) button.disabled = !podcast.cues.length;
+  for (const button of [podcastPrev, podcastNext, podcastRepeat, podcastDownload]) button.disabled = !podcast.cues.length;
 
   podcast.cues.forEach((cue, index) => {
     const enRow = h('button', {
@@ -882,7 +918,14 @@ podcastAudio.addEventListener('error', () => {
   podcastAudioState.textContent = '播放失败';
 });
 podcastTranslate.addEventListener('click', translatePodcast);
-podcastCover.addEventListener('error', () => { podcastCover.style.visibility = 'hidden'; });
+podcastDetails.addEventListener('click', showPodcastDetails);
+podcastDownload.addEventListener('click', downloadPodcastSubtitles);
+document.getElementById('podcast-details-close').addEventListener('click', () => podcastDetailsDialog.close());
+podcastDetailsDialog.addEventListener('click', (event) => {
+  if (event.target !== podcastDetailsDialog) return;
+  const rect = podcastDetailsDialog.getBoundingClientRect();
+  if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) podcastDetailsDialog.close();
+});
 
 function podcastDurationValue() {
   return Number(podcastAudio.duration) || Number(podcast.selectedEpisode?.durationSeconds) || 0;
@@ -2044,16 +2087,29 @@ async function ensureStudioSettings() {
   }
 }
 
+function updateRailSelection() {
+  const choices = [
+    ...[...document.querySelectorAll('.studio-tab')].map((button) => [button, state.view === 'videos' && button.dataset.tab === state.tab]),
+    [railChat, state.view === 'chat'],
+    [railSettings, state.view === 'settings'],
+  ];
+  for (const [button, active] of choices) {
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+    if (button.dataset.tab) {
+      button.setAttribute('aria-selected', String(active));
+      button.tabIndex = button.dataset.tab === state.tab ? 0 : -1;
+    }
+  }
+}
+
 function setView(view) {
   state.view = view;
   const videos = view === 'videos';
   const chatting = view === 'chat';
   const configuring = view === 'settings';
-  for (const [button, active] of [[railVideos, videos], [railChat, chatting], [railSettings, configuring]]) {
-    button.classList.toggle('active', active);
-    if (active) button.setAttribute('aria-current', 'page');
-    else button.removeAttribute('aria-current');
-  }
+  updateRailSelection();
   chatView.classList.toggle('hidden', !chatting);
   settingsView.classList.toggle('hidden', !configuring);
   const url = new URL(window.location.href);
@@ -2081,12 +2137,7 @@ function setTab(tab) {
   if (state.tab === 'youtube' && tab !== 'youtube' && state.detailOpen) closeVideoDetail({ restore: false });
   if (state.tab === 'books' && tab !== 'books' && bookState.readerOpen) closeBookReader({ restore: false });
   state.tab = tab;
-  for (const button of document.querySelectorAll('.studio-tab')) {
-    const active = button.dataset.tab === tab;
-    button.classList.toggle('active', active);
-    button.setAttribute('aria-selected', active ? 'true' : 'false');
-    button.tabIndex = active ? 0 : -1;
-  }
+  updateRailSelection();
   const url = new URL(window.location.href);
   if (tab === 'youtube') url.searchParams.delete('tab');
   else url.searchParams.set('tab', tab);
@@ -2194,7 +2245,6 @@ form.addEventListener('submit', (event) => {
   runSearch();
 });
 
-railVideos.addEventListener('click', () => setView('videos'));
 railChat.addEventListener('click', () => setView('chat'));
 railSettings.addEventListener('click', () => setView('settings'));
 treeCollapse.addEventListener('click', () => setTreeCollapsed(true));
@@ -2205,8 +2255,8 @@ for (const button of document.querySelectorAll('.studio-tab')) {
   button.addEventListener('keydown', (event) => {
     const tabs = [...document.querySelectorAll('.studio-tab')];
     const index = tabs.indexOf(button);
-    const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length
-      : event.key === 'ArrowLeft' ? (index - 1 + tabs.length) % tabs.length
+    const next = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? (index + 1) % tabs.length
+      : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? (index - 1 + tabs.length) % tabs.length
         : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1;
     if (next < 0) return;
     event.preventDefault();

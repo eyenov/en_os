@@ -217,11 +217,13 @@ async function main() {
       const settings = document.getElementById('rail-settings').getBoundingClientRect();
       const view = document.getElementById('settings-view');
       return {
-        tabsAtTop: document.querySelector('.studio-tabs').getBoundingClientRect().top === 0,
+        tabsInRail: [...document.querySelectorAll('.studio-tab')].length === 3 && [...document.querySelectorAll('.studio-tab')].every((button) => button.closest('.studio-rail')),
+        libraryRemoved: !document.getElementById('rail-videos') && !document.querySelector('.studio-main > .studio-tabs'),
         leftRail: rail.left === 0 && rail.height === innerHeight,
         settingsAtBottom: settings.bottom > innerHeight - 80 && settings.right <= rail.right,
         cleanChrome: !document.querySelector('.studio-topbar, .studio-brand, .studio-wordmark, .rail-home, #nav'),
         settingsLoaded: !view.classList.contains('hidden') && document.querySelectorAll('#settings-view .provider-tab').length > 0,
+        mediaSelectionClears: [...document.querySelectorAll('.studio-tab')].every((button) => !button.classList.contains('active') && button.getAttribute('aria-selected') === 'false'),
         noOverflow: document.documentElement.scrollWidth <= innerWidth + 1 && view.scrollWidth <= view.clientWidth + 1,
       };
     })()`);
@@ -245,8 +247,8 @@ async function main() {
     await cdp.evaluate(`localStorage.removeItem('enos.podcast.offset.v1.clock-fixture.clock-episode')`);
     await cdp.evaluate(`(() => {
       const fixture = ${JSON.stringify({
-      channel: { id: 'clock-fixture', name: 'The English Edit', image: POSTER },
-      episode: { id: 'clock-episode', channelId: 'clock-fixture', title: 'Small changes, a different perspective', date: '2026-10-30', duration: '0:52', durationSeconds: 52, image: POSTER, description: 'Cities, everyday choices, and the ideas that change how we see the world.' },
+      channel: { id: 'clock-fixture', name: 'The English Edit', image: POSTER, site: 'https://example.com/podcasts/the-english-edit' },
+      episode: { id: 'clock-episode', channelId: 'clock-fixture', title: 'Small changes, a different perspective', subtitle: 'Everyday choices and new perspectives', date: '2026-10-30', duration: '0:52', durationSeconds: 52, image: POSTER, audio: 'https://example.com/podcasts/clock-episode.mp3', description: 'Cities, everyday choices, and the ideas that change how we see the world.' },
       cues: PODCAST_CUES,
       audio: audioFixture(),
     })};
@@ -256,6 +258,38 @@ async function main() {
       window.__VIDEOS_DEBUG__.setPodcastData(fixture);
     })()`);
     await cdp.waitFor(`document.getElementById('podcast-audio').readyState >= 2`);
+    await cdp.evaluate(`document.getElementById('tab-youtube').focus()`);
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 });
+    const verticalTabs = await cdp.evaluate(`document.activeElement.id === 'tab-podcast' && document.getElementById('tab-podcast').getAttribute('aria-selected') === 'true' && document.getElementById('tab-podcast').getAttribute('aria-current') === 'page'`);
+    await cdp.evaluate(`document.getElementById('podcast-details').focus(); document.getElementById('podcast-details').click()`);
+    const details = await cdp.evaluate(`(() => {
+      const dialog = document.getElementById('podcast-details-dialog');
+      const content = dialog.textContent;
+      const rect = dialog.getBoundingClientRect();
+      return dialog.open && dialog.matches(':modal') && content.includes('Everyday choices and new perspectives') && content.includes('2026-10-30') && content.includes('Cities, everyday choices') && content.includes('https://example.com/podcasts/clock-episode.mp3') && dialog.querySelector('a[href*="download=1"]') !== null && rect.width <= innerWidth - 24 && rect.height <= innerHeight - 24 && dialog.scrollWidth <= dialog.clientWidth + 1;
+    })()`);
+    await cdp.screenshot(MOBILE ? 'podcast-details-mobile.png' : 'podcast-details.png');
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    const detailsEscape = await cdp.evaluate(`!document.getElementById('podcast-details-dialog').open && document.activeElement.id === 'podcast-details'`);
+    await cdp.evaluate(`document.getElementById('podcast-details').click(); document.getElementById('podcast-details-close').click()`);
+    const detailsClose = await cdp.evaluate(`!document.getElementById('podcast-details-dialog').open`);
+    const subtitleDownload = await cdp.evaluate(`(async () => {
+      const create = URL.createObjectURL;
+      const click = HTMLAnchorElement.prototype.click;
+      let blob;
+      let filename = '';
+      URL.createObjectURL = (value) => { blob = value; return create.call(URL, value); };
+      HTMLAnchorElement.prototype.click = function () { filename = this.download; };
+      try {
+        document.getElementById('podcast-download').click();
+        const content = await blob.text();
+        return filename === 'Small changes, a different perspective.srt' && (content.match(/ --> /g) || []).length === ${PODCAST_CUES.length} && content.includes(${JSON.stringify(PODCAST_CUES[0].en)}) && content.includes(${JSON.stringify(PODCAST_CUES[0].zh)}) && content.includes('00:00:00,500 --> 00:00:03,700');
+      } finally {
+        URL.createObjectURL = create;
+        HTMLAnchorElement.prototype.click = click;
+      }
+    })()`);
     await cdp.evaluate(`document.getElementById('podcast-play').click()`);
     await cdp.waitFor(`document.getElementById('podcast-audio').currentTime > 0.55 && !document.getElementById('podcast-audio').paused`);
     const playing = await cdp.evaluate(`!document.getElementById('podcast-audio').paused && window.__VIDEOS_DEBUG__.podcastState.activeCue === 0`);
@@ -283,12 +317,22 @@ async function main() {
     await cdp.waitFor(`window.__VIDEOS_DEBUG__.podcastState.activeCue === 1`);
     await cdp.evaluate(`document.getElementById('podcast-audio').pause()`);
     const navigation = await cdp.evaluate(`Math.abs(document.getElementById('podcast-audio').currentTime - ${PODCAST_CUES[1].start + 1}) < 0.5`);
-    await cdp.evaluate(`(() => {
+    const playbackSettings = await cdp.evaluate(`(() => {
+      const settings = document.getElementById('podcast-sync-settings');
+      const summary = settings.querySelector('summary');
+      summary.click();
+      const popover = settings.querySelector('.sync-popover').getBoundingClientRect();
+      const offset = document.getElementById('podcast-offset');
+      const input = offset.getBoundingClientRect();
       const follow = document.getElementById('podcast-follow');
-      follow.checked = false;
-      follow.dispatchEvent(new Event('change', { bubbles: true }));
+      follow.click();
+      return settings.open && summary.closest('.podcast-title-actions') !== null && popover.left >= 0 && popover.right <= innerWidth && popover.bottom <= innerHeight && document.elementFromPoint(input.left + input.width / 2, input.top + input.height / 2) === offset;
     })()`);
     const follow = await cdp.evaluate(`window.__VIDEOS_DEBUG__.podcastState.follow === false`);
+    await cdp.screenshot(MOBILE ? 'podcast-settings-mobile.png' : 'podcast-settings.png');
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    const playbackSettingsEscape = await cdp.evaluate(`!document.getElementById('podcast-sync-settings').open`);
     let drawer = true;
     let smallScreen = true;
     if (MOBILE) {
@@ -304,7 +348,7 @@ async function main() {
         const pane = document.getElementById('podcast-pane').getBoundingClientRect();
         const subtitles = document.getElementById('podcast-en').getBoundingClientRect();
         const visibleHeight = Math.min(pane.bottom, subtitles.bottom) - Math.max(pane.top, subtitles.top);
-        return document.documentElement.scrollWidth <= 321 && visibleHeight > 100;
+        return document.documentElement.scrollWidth <= 321 && visibleHeight > 250;
       })()`);
       await cdp.screenshot('podcast-small.png');
       await cdp.evaluate(`document.getElementById('podcast-title').textContent = ${JSON.stringify(previousTitle)}`);
@@ -313,8 +357,15 @@ async function main() {
     const podcastLayout = await cdp.evaluate(`(() => {
       const canvas = document.getElementById('podcast-wave');
       const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      const pane = document.getElementById('podcast-pane').getBoundingClientRect();
+      const header = document.querySelector('.podcast-top').getBoundingClientRect();
+      const player = document.getElementById('podcast-player').getBoundingClientRect();
+      const download = document.getElementById('podcast-download').getBoundingClientRect();
       return {
         noOverflow: document.documentElement.scrollWidth <= innerWidth + 1,
+        compactHeader: header.top === pane.top && header.height <= 56 && player.bottom - pane.top <= ${MOBILE ? 135 : 112} && !document.querySelector('.podcast-top img, .podcast-top p'),
+        subtitleToolbarRemoved: !document.querySelector('.podcast-sub-head') && Math.abs(document.querySelector('.podcast-sub-columns').getBoundingClientRect().top - player.bottom) < 2,
+        downloadAtRight: download.width > 0 && download.right >= header.right - 22 && download.top >= header.top && download.bottom <= header.bottom,
         readable: document.getElementById('podcast-en').clientHeight > 120,
         translated: ${MOBILE} ? getComputedStyle(document.querySelector('.podcast-inline-zh')).display !== 'none' : true,
         aligned: ${MOBILE} ? true : [...document.querySelectorAll('#podcast-en .podcast-cue')].every((row, index) => Math.abs(row.getBoundingClientRect().height - document.querySelectorAll('#podcast-zh .podcast-cue')[index].getBoundingClientRect().height) < 1),
@@ -322,12 +373,50 @@ async function main() {
         title: document.getElementById('podcast-title').textContent,
       };
     })()`);
-    const podcastChecks = { playing, seeking, silence, calibration, navigation, follow, drawer, smallScreen, ...podcastLayout };
+    const podcastChecks = { verticalTabs, details, detailsEscape, detailsClose, subtitleDownload, playbackSettings, playbackSettingsEscape, playing, seeking, silence, calibration, navigation, follow, drawer, smallScreen, ...podcastLayout };
     console.log('  podcast', JSON.stringify(podcastChecks));
     await cdp.screenshot(MOBILE ? 'podcast-mobile.png' : 'podcast.png');
     await cdp.evaluate(`document.getElementById('podcast-offset-reset').click()`);
 
-    console.log('5. watch fixture');
+    console.log('5. book list fixture');
+    await cdp.evaluate(`(() => {
+      const originalFetch = window.fetch;
+      window.fetch = (resource, options) => {
+        if (resource !== '/api/books') return originalFetch.call(window, resource, options);
+        window.fetch = originalFetch;
+        return Promise.resolve(new Response(JSON.stringify(${JSON.stringify({
+      channels: [
+        { id: 'economist', name: 'The Economist', short: 'TE', accent: '#b51d23', count: 1 },
+        { id: 'new-scientist', name: 'New Scientist', short: 'NS', accent: '#246b63', count: 1 },
+      ],
+      books: [
+        { id: 'economist-2026-10-24', category: 'economist', magazine: 'The Economist', short: 'TE', accent: '#b51d23', title: 'The Economist · 2026-10-24', date: '2026-10-24', readable: true, formats: [{ format: 'epub', sizeLabel: '8 MB' }] },
+        { id: 'new-scientist-2026-10-24', category: 'new-scientist', magazine: 'New Scientist', short: 'NS', accent: '#246b63', title: 'New Scientist · 2026-10-24', date: '2026-10-24', readable: true, formats: [{ format: 'epub', sizeLabel: '6 MB' }, { format: 'pdf', sizeLabel: '12 MB' }] },
+      ],
+    })}), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      };
+      document.getElementById('tab-books').click();
+    })()`);
+    await cdp.waitFor(`document.querySelectorAll('#books-grid .book-card').length === 2`);
+    await cdp.waitFor(`document.getElementById('books-grid').getAnimations().every((animation) => animation.playState === 'finished')`);
+    const booksChecks = await cdp.evaluate(`(() => {
+      const pane = document.getElementById('books-pane');
+      const grid = document.getElementById('books-grid');
+      return {
+        headerRemoved: !pane.querySelector('.books-head, .books-source, h1'),
+        listAtTop: Math.abs(grid.getBoundingClientRect().top - pane.getBoundingClientRect().top) < 1,
+        cardsVisible: [...grid.querySelectorAll('.book-card')].every((card) => card.getBoundingClientRect().width > 0),
+        noOverflow: document.documentElement.scrollWidth <= innerWidth + 1 && grid.scrollWidth <= grid.clientWidth + 1,
+      };
+    })()`);
+    await cdp.evaluate(`document.querySelectorAll('#channel-list .tree-main')[1].click()`);
+    booksChecks.categorySwitches = await cdp.evaluate(`document.querySelectorAll('#books-grid .book-card').length === 1 && document.querySelector('#books-grid .book-card h2').textContent.includes('The Economist')`);
+    await cdp.evaluate(`document.querySelector('#channel-list .tree-main').click()`);
+    booksChecks.allBooksReturn = await cdp.evaluate(`document.querySelectorAll('#books-grid .book-card').length === 2`);
+    console.log('  books', JSON.stringify(booksChecks));
+    await cdp.screenshot(MOBILE ? 'books-mobile.png' : 'books.png');
+
+    console.log('6. watch fixture');
     await cdp.send('Page.navigate', { url: `${BASE}/watch.html?v=abc12345678&debug=1` });
     await cdp.waitFor(`window.__WATCH_DEBUG__`);
     await sleep(300);
@@ -382,9 +471,11 @@ async function main() {
         && state.enCues === 4 && state.zhCues === 4
         && state.scrollWidth <= state.innerWidth + 1
         && Object.entries(podcastChecks).every(([key, value]) => key === 'title' || value === true)
+        && Object.values(booksChecks).every((value) => value === true)
         && Object.values(workspaceChecks).every((value) => value === true),
       workspace: workspaceChecks,
       podcast: podcastChecks,
+      books: booksChecks,
       state,
       consoleErrors: cdp.logs,
       exceptions: cdp.exceptions,

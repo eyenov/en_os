@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseVtt } from '../server/podcasts.mjs';
-import { findWordIndex } from '../public/js/subtitle-sync.js';
+import { findWordIndex, serializeSrt } from '../public/js/subtitle-sync.js';
 
 test('parses podcast VTT cues and distributes word timings', () => {
   const cues = parseVtt(`WEBVTT
@@ -80,4 +80,17 @@ test('word highlighting clears during silence, at the end and after seeking back
   assert.equal(findWordIndex(words, 4), -1);
   assert.equal(findWordIndex(words, 1), 0);
   assert.equal(findWordIndex(words, NaN), -1);
+});
+
+test('podcast subtitle export preserves bilingual text and millisecond timing', () => {
+  assert.equal(serializeSrt([
+    { start: 0.52, end: 4.31, en: 'Hello world.', zh: '你好，世界。' },
+    { start: 3600, end: 3602.5, en: 'One hour later.' },
+  ]), '1\n00:00:00,520 --> 00:00:04,310\nHello world.\n你好，世界。\n\n2\n01:00:00,000 --> 01:00:02,500\nOne hour later.\n');
+});
+
+test('podcast subtitle export handles empty data and carries rounded milliseconds', () => {
+  assert.equal(serializeSrt([]), '');
+  assert.equal(serializeSrt([{ start: 1, end: 0, en: 'Invalid' }]), '');
+  assert.equal(serializeSrt([{ start: 59.9996, end: 60.5, en: 'Next minute.' }]), '1\n00:01:00,000 --> 00:01:00,500\nNext minute.\n');
 });
