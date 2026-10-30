@@ -4,8 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light" />
-  <title>视频工作台 · EnOS</title>
-  <meta name="description" content="EnOS 视频工作台：按频道浏览 YouTube 视频，打开逐词双语字幕。" />
+  <title>学习工作台 · EnOS</title>
+  <meta name="description" content="EnOS 学习工作台：视频、播客与英文阅读。" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="/css/studio.css" />
 </head>
 <body class="studio-body">
+  <a class="skip-link" href="#media-view">跳到学习内容</a>
   <div class="studio-shell">
     <aside class="studio-rail" aria-label="主导航">
       <a class="studio-brand" href="/videos.html" aria-label="EnOS 视频工作台">
@@ -24,7 +25,7 @@
             <rect x="3" y="5" width="18" height="14" rx="3"/>
             <path d="M10 9.5l5 2.5-5 2.5z" fill="currentColor" stroke="none"/>
           </svg>
-          <span>视频</span>
+          <span>资料库</span>
         </button>
         <button class="rail-btn" id="rail-chat" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -34,30 +35,40 @@
           <span>对话</span>
         </button>
       </nav>
-      <div class="studio-rail-foot" aria-hidden="true">ENOS · STUDIO</div>
+      <a class="rail-home" href="/" title="学习主页" aria-label="学习主页"><span data-icon="target"></span></a>
+      <div class="studio-rail-foot" aria-hidden="true">ENOS</div>
     </aside>
 
     <div class="studio-main">
+      <div class="studio-topbar">
+        <a class="studio-wordmark" href="/videos.html">EnOS<span>STUDIO</span></a>
+        <span class="studio-workspace-name">学习工作台</span>
+        <div class="studio-topbar-actions">
+          <span class="studio-personal">个人空间</span>
+          <a class="studio-icon-button" href="/#/settings" title="模型与偏好设置" aria-label="模型与偏好设置"><span data-icon="settings"></span></a>
+        </div>
+      </div>
       <header class="studio-tabs" role="tablist" aria-label="内容类型">
-        <button class="studio-tab active" id="tab-youtube" type="button" role="tab" aria-selected="true" data-tab="youtube">YouTube</button>
-        <button class="studio-tab" id="tab-podcast" type="button" role="tab" aria-selected="false" data-tab="podcast">播客</button>
-        <button class="studio-tab" id="tab-books" type="button" role="tab" aria-selected="false" data-tab="books">图书</button>
+        <button class="studio-tab active" id="tab-youtube" type="button" role="tab" aria-selected="true" aria-controls="youtube-pane" data-tab="youtube"><span data-icon="play"></span>YouTube</button>
+        <button class="studio-tab" id="tab-podcast" type="button" role="tab" aria-selected="false" aria-controls="podcast-pane" data-tab="podcast"><span data-icon="headphones"></span>播客</button>
+        <button class="studio-tab" id="tab-books" type="button" role="tab" aria-selected="false" aria-controls="books-pane" data-tab="books"><span data-icon="book"></span>图书</button>
         <span class="studio-tabs-spacer"></span>
-        <button class="tree-open-btn hidden" id="tree-open" type="button">频道</button>
+        <button class="tree-open-btn hidden" id="tree-open" type="button" aria-label="打开频道导航" aria-controls="channel-tree" aria-expanded="false" title="打开频道导航"><span data-icon="chevronRight"></span><span>频道</span></button>
       </header>
 
-      <section class="studio-workspace" id="media-view">
-        <aside class="channel-tree" id="channel-tree">
+      <section class="studio-workspace" id="media-view" tabindex="-1">
+        <aside class="channel-tree" id="channel-tree" aria-label="频道与内容导航">
           <div class="tree-head">
             <div>
               <p class="eyebrow" id="tree-eyebrow">CHANNELS</p>
               <h2 id="tree-title">频道</h2>
               <p id="tree-count">搜索后显示频道</p>
             </div>
-            <button class="tree-collapse" id="tree-collapse" type="button" title="收起频道导航" aria-label="收起频道导航">‹</button>
+            <button class="tree-collapse" id="tree-collapse" type="button" title="收起频道导航" aria-label="收起频道导航"><span data-icon="arrowLeft"></span></button>
           </div>
           <div class="tree-scroll" id="channel-list"></div>
         </aside>
+        <button class="channel-scrim" id="channel-scrim" type="button" aria-label="关闭频道导航" tabindex="-1"></button>
 
         <section class="preview-pane" id="youtube-pane">
           <div class="preview-top">
@@ -67,7 +78,7 @@
               </svg>
               <label class="sr-only" for="video-q">搜索 YouTube 视频</label>
               <input id="video-q" name="q" type="search" placeholder="搜索频道或视频，例如 BBC Learning English" autocomplete="off" />
-              <button class="btn btn-primary" type="submit">搜索</button>
+              <button class="btn btn-primary" type="submit"><span data-icon="search"></span>搜索</button>
             </form>
             <div class="preview-head">
               <div>
@@ -80,44 +91,60 @@
           <div class="preview-scroll" id="video-results" aria-live="polite"></div>
         </section>
 
-        <section class="podcast-pane hidden" id="podcast-pane">
+        <section class="podcast-pane hidden" id="podcast-pane" aria-labelledby="tab-podcast">
           <div class="podcast-top">
             <div class="podcast-cover-wrap">
+              <span class="podcast-cover-placeholder" data-icon="headphones" aria-hidden="true"></span>
               <img id="podcast-cover" alt="" />
             </div>
             <div class="podcast-info">
-              <p class="eyebrow">PODCAST</p>
-              <h1 id="podcast-title">从左侧选择一集播客</h1>
-              <p id="podcast-meta">展开频道，选择一集开始精听</p>
+              <div class="podcast-labels"><p class="eyebrow">PODCAST / 精听</p><span class="podcast-audio-state" id="podcast-audio-state">尚未选择单集</span></div>
+              <h1 id="podcast-title">播客</h1>
+              <p id="podcast-meta"></p>
               <p id="podcast-desc" class="podcast-desc"></p>
             </div>
+            <a class="studio-icon-button podcast-download hidden" id="podcast-download" title="下载本集音频" aria-label="下载本集音频"><span data-icon="download"></span></a>
           </div>
           <div class="podcast-player" id="podcast-player">
-            <button class="podcast-play" id="podcast-play" type="button" aria-label="播放">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M8 5l11 7-11 7z"/></svg>
-            </button>
+            <div class="podcast-transport">
+              <button class="studio-icon-button" id="podcast-prev" type="button" title="上一句" aria-label="上一句" disabled><span data-icon="arrowLeft"></span></button>
+              <button class="podcast-play" id="podcast-play" type="button" title="播放" aria-label="播放" disabled><span data-icon="play"></span></button>
+              <button class="studio-icon-button" id="podcast-next" type="button" title="下一句" aria-label="下一句" disabled><span data-icon="arrowRight"></span></button>
+            </div>
             <span class="podcast-time" id="podcast-current">0:00</span>
             <div class="podcast-wave-wrap">
               <canvas id="podcast-wave" role="slider" tabindex="0" aria-label="播放进度"></canvas>
             </div>
             <span class="podcast-time" id="podcast-duration">0:00</span>
+            <label class="podcast-speed" title="播放速度"><span class="sr-only">播放速度</span><select id="podcast-speed"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+            <button class="studio-icon-button podcast-repeat" id="podcast-repeat" type="button" title="重听当前句" aria-label="重听当前句" disabled><span data-icon="refresh"></span></button>
             <audio id="podcast-audio" preload="metadata"></audio>
           </div>
           <div class="podcast-subtitles">
             <div class="podcast-sub-head">
-              <div>
-                <h2>同步字幕</h2>
-                <p id="podcast-status">选择一集播客后加载字幕</p>
+              <div class="podcast-sub-heading">
+                <div class="podcast-sub-title"><h2>双语字幕</h2><span id="podcast-position" class="podcast-position">00 / 00</span></div>
+                <p id="podcast-status" role="status">正在准备字幕</p>
               </div>
-              <button class="btn btn-soft btn-sm hidden" id="podcast-translate" type="button">重试翻译</button>
+              <div class="podcast-sub-tools">
+                <button class="btn btn-soft btn-sm hidden" id="podcast-translate" type="button">重试翻译</button>
+                <label class="follow-control"><input id="podcast-follow" type="checkbox" checked /><span>跟随播放</span></label>
+                <details class="sync-settings" id="podcast-sync-settings">
+                  <summary class="studio-icon-button" title="字幕时间校准" aria-label="字幕时间校准"><span data-icon="settings"></span></summary>
+                  <div class="sync-popover">
+                    <label for="podcast-offset">字幕延迟（秒）</label>
+                    <div class="sync-offset-row"><input id="podcast-offset" type="number" min="-300" max="300" step="0.1" value="0" title="正值延后字幕，负值提前字幕" /><button class="studio-icon-button" id="podcast-offset-reset" type="button" title="重置字幕延迟" aria-label="重置字幕延迟"><span data-icon="refresh"></span></button></div>
+                  </div>
+                </details>
+              </div>
             </div>
             <div class="podcast-sub-columns">
               <div class="podcast-col">
-                <div class="podcast-col-title">ENGLISH</div>
+                <div class="podcast-col-title"><span>ENGLISH</span><span class="podcast-col-note">原文</span></div>
                 <div class="podcast-col-scroll" id="podcast-en" aria-live="polite"></div>
               </div>
               <div class="podcast-col">
-                <div class="podcast-col-title">中文</div>
+                <div class="podcast-col-title"><span>中文</span><span class="podcast-col-note">译文</span></div>
                 <div class="podcast-col-scroll" id="podcast-zh" aria-live="polite"></div>
               </div>
             </div>
@@ -126,14 +153,14 @@
 
         <section class="video-detail hidden" id="video-detail">
           <div class="detail-head">
-            <button class="detail-back" id="detail-back" type="button">← 视频列表</button>
+            <button class="detail-back" id="detail-back" type="button"><span data-icon="arrowLeft"></span>视频列表</button>
             <div class="detail-head-main">
               <h1 id="detail-title">视频</h1>
               <p id="detail-meta"></p>
               <span id="detail-status" class="sr-only"></span>
             </div>
             <button class="btn btn-soft btn-sm hidden" id="detail-translate" type="button">重试翻译</button>
-            <button class="btn btn-ghost btn-sm detail-export" id="detail-export" type="button">导出字幕</button>
+            <button class="btn btn-ghost btn-sm detail-export" id="detail-export" type="button"><span data-icon="download"></span>导出字幕</button>
           </div>
           <div class="detail-body" id="detail-body">
             <div class="detail-left" id="detail-left">
@@ -145,7 +172,7 @@
                 <div class="detail-messages" id="detail-messages" aria-live="polite"></div>
                 <form class="detail-chat-form" id="detail-chat-form">
                   <textarea id="detail-chat-input" rows="2" maxlength="2000" placeholder="问 Agent：解释当前句 / 总结这段视频"></textarea>
-                  <button class="btn btn-primary" id="detail-chat-send" type="submit">发送</button>
+                  <button class="btn btn-primary" id="detail-chat-send" type="submit" title="发送" aria-label="发送"><span data-icon="send"></span></button>
                 </form>
               </div>
             </div>
@@ -179,7 +206,7 @@
 
         <section class="book-reader hidden" id="book-reader">
           <div class="book-reader-head">
-            <button class="detail-back" id="book-back" type="button">← 图书列表</button>
+            <button class="detail-back" id="book-back" type="button"><span data-icon="arrowLeft"></span>图书列表</button>
             <div class="book-reader-title">
               <h1 id="book-title">图书</h1>
               <p id="book-meta"></p>
@@ -198,10 +225,11 @@
 
       <section class="chat-view hidden" id="chat-view">
         <div class="chat-shell">
+          <div class="chat-heading"><span data-icon="sparkles"></span><h1>学习对话</h1><span>EnOS Agent</span></div>
           <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
           <form class="chat-form" id="chat-form">
             <textarea id="chat-input" rows="2" maxlength="2000" placeholder="问 Agent：帮我解释这段英文…"></textarea>
-            <button class="btn btn-primary" id="chat-send" type="submit">发送</button>
+            <button class="btn btn-primary" id="chat-send" type="submit" title="发送" aria-label="发送"><span data-icon="send"></span></button>
           </form>
         </div>
       </section>

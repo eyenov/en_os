@@ -49,7 +49,7 @@ export function findCueIndex(cues, time) {
 }
 
 export function findWordIndex(words = [], time) {
-  if (!words.length) return -1;
+  if (!words.length || !Number.isFinite(time)) return -1;
   let low = 0;
   let high = words.length - 1;
   let found = -1;
@@ -62,7 +62,7 @@ export function findWordIndex(words = [], time) {
       high = middle - 1;
     }
   }
-  return found;
+  return found >= 0 && time < words[found].end ? found : -1;
 }
 
 export function cueProgress(cue, time) {

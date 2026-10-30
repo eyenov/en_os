@@ -207,19 +207,34 @@ function parseVttTime(value) {
 }
 
 function wordTokens(text) {
-  return String(text).match(/[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*/gu) || [];
+  return String(text).match(/\S+/g) || [];
 }
 
 function distributeWords(tokens, start, end) {
+  if (end <= start) return [];
   const total = tokens.reduce((sum, token) => sum + Math.max(2, token.length), 0) || 1;
   let cursor = start;
   return tokens.map((text, index) => {
     const weight = Math.max(2, text.length);
     const wordEnd = index === tokens.length - 1 ? end : Math.min(end, cursor + ((end - start) * weight) / total);
-    const word = { text, start: Math.round(cursor * 1000) / 1000, end: Math.round(Math.max(cursor + 0.06, wordEnd) * 1000) / 1000 };
-    cursor = word.end;
+    const word = { text, start: Math.round(cursor * 1000) / 1000, end: Math.round(wordEnd * 1000) / 1000 };
+    cursor = wordEnd;
     return word;
   });
+}
+
+function parseVttWords(content, start, end) {
+  const words = [];
+  let cursor = start;
+  let offset = 0;
+  for (const match of content.matchAll(/<((?:\d{2,}:)?\d{2}:\d{2}\.\d{3})>/g)) {
+    const boundary = Math.max(cursor, Math.min(end, parseVttTime(match[1])));
+    words.push(...distributeWords(wordTokens(stripHtml(content.slice(offset, match.index))), cursor, boundary));
+    cursor = boundary;
+    offset = match.index + match[0].length;
+  }
+  words.push(...distributeWords(wordTokens(stripHtml(content.slice(offset))), cursor, end));
+  return words;
 }
 
 export function parseVtt(text) {
@@ -234,13 +249,10 @@ export function parseVtt(text) {
     const start = parseVttTime(timing[0]);
     const end = parseVttTime(String(timing[1] || '').trim().split(/\s+/)[0]);
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
-    const content = lines.slice(timingIndex + 1)
-      .join(' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!content) continue;
-    cues.push({ start, end, text: content });
+    const content = lines.slice(timingIndex + 1).join(' ');
+    const plainText = stripHtml(content);
+    if (!plainText) continue;
+    cues.push({ start, end, text: plainText, words: parseVttWords(content, start, end) });
   }
 
   const merged = [];
@@ -254,19 +266,19 @@ export function parseVtt(text) {
     if (canMerge) {
       last.end = cue.end;
       last.text = `${last.text} ${cue.text}`.replace(/\s+/g, ' ').trim();
+      last.words.push(...cue.words);
     } else {
       merged.push({ ...cue });
     }
   }
 
   return merged.map((cue) => {
-    const tokens = wordTokens(cue.text);
     return {
       start: Math.round(cue.start * 1000) / 1000,
       end: Math.round(cue.end * 1000) / 1000,
       en: cue.text,
       zh: '',
-      words: distributeWords(tokens, cue.start, cue.end),
+      words: cue.words,
     };
   });
 }

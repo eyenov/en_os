@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseVtt } from '../server/podcasts.mjs';
+import { findWordIndex } from '../public/js/subtitle-sync.js';
 
 test('parses podcast VTT cues and distributes word timings', () => {
   const cues = parseVtt(`WEBVTT
@@ -23,4 +24,60 @@ test('parses podcast VTT cues and distributes word timings', () => {
   assert.equal(cues[1].en, 'Soundstack.');
   assert.equal(cues[2].en, 'Goals are good.');
   assert.ok(cues[2].words.at(-1).end <= 10.24);
+});
+
+test('merging podcast cues preserves their original timing anchors and pauses', () => {
+  const cues = parseVtt(`WEBVTT
+
+00:00:01.000 --> 00:00:02.000
+Hello there
+
+00:00:02.800 --> 00:00:06.000
+this is a much longer sentence.
+`);
+  assert.equal(cues.length, 1);
+  assert.equal(cues[0].words[0].start, 1);
+  assert.equal(cues[0].words[1].end, 2);
+  assert.equal(cues[0].words[2].start, 2.8);
+  assert.equal(cues[0].words.at(-1).text, 'sentence.');
+  assert.equal(cues[0].words.at(-1).end, 6);
+});
+
+test('podcast VTT retains inline word timestamps instead of redistributing them', () => {
+  const [cue] = parseVtt(`WEBVTT
+
+00:00:01.000 --> 00:00:05.000
+<v Speaker><c>Hello</c> <00:00:01.400>world, <00:00:04.000>today.</v>
+`);
+  assert.deepEqual(cue.words, [
+    { text: 'Hello', start: 1, end: 1.4 },
+    { text: 'world,', start: 1.4, end: 4 },
+    { text: 'today.', start: 4, end: 5 },
+  ]);
+});
+
+test('short podcast cues never allocate words beyond the cue end', () => {
+  const [cue] = parseVtt(`WEBVTT
+
+00:00:01.000 --> 00:00:01.100
+One two three four.
+`);
+  assert.equal(cue.words.length, 4);
+  assert.ok(cue.words.every((word) => word.start >= cue.start && word.end <= cue.end));
+  assert.equal(cue.words.at(-1).end, cue.end);
+});
+
+test('word highlighting clears during silence, at the end and after seeking backwards', () => {
+  const words = [
+    { text: 'Hello', start: 1, end: 2 },
+    { text: 'again.', start: 2.8, end: 4 },
+  ];
+  assert.equal(findWordIndex(words, 0), -1);
+  assert.equal(findWordIndex(words, 1.5), 0);
+  assert.equal(findWordIndex(words, 2), -1);
+  assert.equal(findWordIndex(words, 2.5), -1);
+  assert.equal(findWordIndex(words, 2.8), 1);
+  assert.equal(findWordIndex(words, 4), -1);
+  assert.equal(findWordIndex(words, 1), 0);
+  assert.equal(findWordIndex(words, NaN), -1);
 });

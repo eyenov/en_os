@@ -41,6 +41,11 @@ const params = new URLSearchParams(window.location.search);
 
 const SUGGESTIONS = ['TED-Ed', 'BBC Learning English', 'IELTS listening', 'National Geographic', 'Science explainer'];
 const TREE_KEY = 'enos.videos.treeCollapsed.v1';
+const compactViewport = window.matchMedia('(max-width: 900px)');
+
+for (const element of document.querySelectorAll('[data-icon]')) {
+  element.innerHTML = icon(element.dataset.icon, 18);
+}
 
 const state = {
   view: 'videos',
@@ -71,6 +76,8 @@ const podcast = {
   activeCue: -1,
   activeWord: -1,
   activeChars: -1,
+  offset: 0,
+  follow: true,
   ticker: null,
   requestSeq: 0,
   translateSeq: 0,
@@ -96,6 +103,13 @@ const podcastStatus = document.getElementById('podcast-status');
 const podcastTranslate = document.getElementById('podcast-translate');
 const podcastEn = document.getElementById('podcast-en');
 const podcastZh = document.getElementById('podcast-zh');
+const podcastOffset = document.getElementById('podcast-offset');
+const podcastPosition = document.getElementById('podcast-position');
+const podcastAudioState = document.getElementById('podcast-audio-state');
+const podcastDownload = document.getElementById('podcast-download');
+const podcastPrev = document.getElementById('podcast-prev');
+const podcastNext = document.getElementById('podcast-next');
+const podcastRepeat = document.getElementById('podcast-repeat');
 let podcastCueEls = [];
 let podcastWordEls = [];
 let podcastCharEls = [];
@@ -228,12 +242,12 @@ function previewCard(item) {
     h('div', { class: 'preview-body' },
       h('div', { class: 'preview-title' }, item.title),
       h('div', { class: 'preview-channel' }, item.channel || 'YouTube'),
-      h('div', { class: 'preview-desc' }, item.description || '打开视频后读取字幕、中文翻译与逐词时间轴。'),
+      item.description ? h('div', { class: 'preview-desc' }, item.description) : null,
       h('div', { class: 'preview-meta' },
         meta.map((text) => h('span', { class: 'preview-chip' }, text)),
         item.hasCaptions ? h('span', { class: 'preview-chip cc' }, '带字幕') : h('span', { class: 'preview-chip' }, '字幕待检测'),
       ),
-      h('span', { class: 'preview-open' }, '打开逐词字幕 ↗'),
+      h('span', { class: 'preview-open' }, h('span', { html: icon('play', 12) }), '播放'),
     ),
   );
 }
@@ -317,8 +331,8 @@ function renderPreviews() {
   if (!state.items.length) {
     results.append(h('div', { class: 'preview-empty' },
       h('div', {},
-        h('h2', {}, '从一个频道开始'),
-        h('p', {}, '搜索英文讲座、新闻、科普或雅思听力材料。左侧会按频道生成导航树，右侧展示视频预览。'),
+        h('h2', {}, '发现英文好内容'),
+        h('p', {}, '讲座 / 新闻 / 科普 / 雅思'),
         h('div', { class: 'btn-row', style: 'display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-top:10px' },
           SUGGESTIONS.map((text) => h('button', {
             class: 'chip', type: 'button', onclick: () => runSearch(text),
@@ -530,14 +544,22 @@ async function openPodcastChannel(channel, { selectLatest = false } = {}) {
 
 function setPodcastInfo(channel, episode) {
   podcastTitle.textContent = episode.title;
+  podcastTitle.title = episode.title;
   podcastMeta.textContent = [channel.name, episode.date, episode.duration].filter(Boolean).join(' · ');
   podcastDesc.textContent = episode.description || '';
   podcastCurrent.textContent = '0:00';
   podcastDuration.textContent = episode.duration || '0:00';
   podcast.waveValues = [];
-  podcastCover.alt = '';
-  podcastCover.src = episode.image || '';
+  podcastCover.alt = `${channel.name} 封面`;
+  if (episode.image) podcastCover.src = episode.image;
+  else podcastCover.removeAttribute('src');
   podcastCover.style.visibility = episode.image ? 'visible' : 'hidden';
+  podcastPlay.disabled = false;
+  podcastDownload.href = `/api/podcasts/audio?channel=${encodeURIComponent(channel.id)}&episode=${encodeURIComponent(episode.id)}&download=1`;
+  podcastDownload.classList.remove('hidden');
+  podcast.offset = 0;
+  try { podcast.offset = Math.max(-300, Math.min(300, Number(localStorage.getItem(podcastOffsetKey())) || 0)); } catch {}
+  podcastOffset.value = String(podcast.offset);
   if (podcastAudio.dataset.episode !== episode.id) {
     podcastAudio.pause();
     podcastAudio.dataset.episode = episode.id;
@@ -555,6 +577,7 @@ async function openPodcastEpisode(channel, episode) {
   podcast.translating = false;
   renderPodcastTree();
   setPodcastInfo(channel, episode);
+  if (compactViewport.matches) setTreeCollapsed(true);
   podcast.cues = [];
   podcast.activeCue = -1;
   podcast.activeWord = -1;
@@ -564,6 +587,8 @@ async function openPodcastEpisode(channel, episode) {
   podcastCharEls = [];
   podcastEn.replaceChildren();
   podcastZh.replaceChildren();
+  podcastPosition.textContent = '00 / 00';
+  for (const button of [podcastPrev, podcastNext, podcastRepeat]) button.disabled = true;
   podcastStatus.textContent = '正在加载播客字幕…';
   podcastTranslate.classList.add('hidden');
   const request = ++podcast.requestSeq;
@@ -590,7 +615,7 @@ async function openPodcastEpisode(channel, episode) {
 }
 
 function podcastScrollToCue(index) {
-  if (index < 0) return;
+  if (index < 0 || !podcast.follow) return;
   const pair = podcastCueEls[index];
   if (!pair) return;
   for (const [container, element] of [[podcastEn, pair.en], [podcastZh, pair.zh]]) {
@@ -620,6 +645,7 @@ function setPodcastActiveCue(index) {
   podcast.activeCue = index;
   podcast.activeWord = -1;
   podcast.activeChars = -1;
+  podcastPosition.textContent = `${String(index + 1).padStart(2, '0')} / ${String(podcast.cues.length).padStart(2, '0')}`;
   if (index >= 0) {
     const pair = podcastCueEls[index];
     pair?.en?.classList.add('active');
@@ -630,7 +656,7 @@ function setPodcastActiveCue(index) {
 
 function syncPodcast() {
   if (!podcast.cues.length) return;
-  const time = Number(podcastAudio.currentTime) || 0;
+  const time = (Number(podcastAudio.currentTime) || 0) - podcast.offset;
   const index = findCueIndex(podcast.cues, time);
   if (index !== podcast.activeCue) setPodcastActiveCue(index);
   if (index < 0) return;
@@ -652,6 +678,20 @@ function syncPodcast() {
   }
 }
 
+function alignPodcastSubtitleRows() {
+  if (podcastPane.classList.contains('hidden')) return;
+  for (const pair of podcastCueEls) {
+    pair.en.style.minHeight = '';
+    pair.zh.style.minHeight = '';
+  }
+  if (window.matchMedia('(max-width: 600px)').matches) return;
+  const heights = podcastCueEls.map((pair) => Math.ceil(Math.max(pair.en.getBoundingClientRect().height, pair.zh.getBoundingClientRect().height)));
+  podcastCueEls.forEach((pair, index) => {
+    pair.en.style.minHeight = `${heights[index]}px`;
+    pair.zh.style.minHeight = `${heights[index]}px`;
+  });
+}
+
 function renderPodcastSubtitles() {
   podcastEn.replaceChildren();
   podcastZh.replaceChildren();
@@ -661,16 +701,13 @@ function renderPodcastSubtitles() {
   podcast.activeCue = -1;
   podcast.activeWord = -1;
   podcast.activeChars = -1;
+  for (const button of [podcastPrev, podcastNext, podcastRepeat]) button.disabled = !podcast.cues.length;
 
   podcast.cues.forEach((cue, index) => {
     const enRow = h('button', {
       class: 'podcast-cue',
       type: 'button',
-      onclick: () => {
-        podcastAudio.currentTime = cue.start;
-        podcastAudio.play().catch(() => {});
-        syncPodcast();
-      },
+      onclick: () => playPodcastCue(index),
     }, h('span', { class: 'podcast-time' }, formatTimestamp(cue.start)));
     const enLine = h('span', { class: 'podcast-en' });
     const wordNodes = [];
@@ -683,15 +720,12 @@ function renderPodcastSubtitles() {
     });
     if (!words.length) enLine.textContent = cue.en;
     enRow.append(enLine);
+    if (cue.zh) enRow.append(h('span', { class: 'podcast-inline-zh', lang: 'zh-CN' }, cue.zh));
 
     const zhRow = h('button', {
       class: 'podcast-cue',
       type: 'button',
-      onclick: () => {
-        podcastAudio.currentTime = cue.start;
-        podcastAudio.play().catch(() => {});
-        syncPodcast();
-      },
+      onclick: () => playPodcastCue(index),
     }, h('span', { class: 'podcast-time' }, formatTimestamp(cue.start)));
     const zhLine = h('span', { class: 'podcast-zh' });
     const chars = [];
@@ -712,6 +746,7 @@ function renderPodcastSubtitles() {
     podcastEn.append(enRow);
     podcastZh.append(zhRow);
   });
+  alignPodcastSubtitleRows();
   syncPodcast();
 }
 
@@ -773,11 +808,16 @@ async function translatePodcast() {
 
 function startPodcastTicker() {
   stopPodcastTicker();
-  podcast.ticker = setInterval(syncPodcast, 100);
+  const tick = () => {
+    syncPodcast();
+    podcast.ticker = requestAnimationFrame(tick);
+  };
+  syncPodcast();
+  podcast.ticker = requestAnimationFrame(tick);
 }
 
 function stopPodcastTicker() {
-  if (podcast.ticker) clearInterval(podcast.ticker);
+  if (podcast.ticker) cancelAnimationFrame(podcast.ticker);
   podcast.ticker = null;
 }
 
@@ -786,7 +826,9 @@ podcastAudio.addEventListener('timeupdate', () => {
   drawPodcastWave();
   syncPodcast();
 });
-podcastAudio.addEventListener('seeked', () => { updatePodcastTimes(); drawPodcastWave(); syncPodcast(); });
+podcastAudio.addEventListener('seeked', () => { updatePodcastTimes(); updatePodcastPlayButton(); drawPodcastWave(); syncPodcast(); });
+podcastAudio.addEventListener('seeking', syncPodcast);
+podcastAudio.addEventListener('ratechange', syncPodcast);
 podcastAudio.addEventListener('loadedmetadata', updatePodcastTimes);
 podcastAudio.addEventListener('durationchange', updatePodcastTimes);
 podcastAudio.addEventListener('play', () => {
@@ -794,6 +836,8 @@ podcastAudio.addEventListener('play', () => {
   startPodcastTicker();
   startPodcastVisual();
 });
+podcastAudio.addEventListener('playing', updatePodcastPlayButton);
+podcastAudio.addEventListener('waiting', () => { podcastAudioState.textContent = '缓冲中'; });
 podcastAudio.addEventListener('pause', () => {
   updatePodcastPlayButton();
   stopPodcastTicker();
@@ -806,8 +850,12 @@ podcastAudio.addEventListener('ended', () => {
   stopPodcastVisual();
   updatePodcastPlayButton();
   drawPodcastWave();
+  syncPodcast();
 });
-podcastAudio.addEventListener('error', () => { podcastStatus.textContent = '音频无法播放，请检查网络或代理'; });
+podcastAudio.addEventListener('error', () => {
+  podcastStatus.textContent = '音频无法播放，请检查网络或代理';
+  podcastAudioState.textContent = '播放失败';
+});
 podcastTranslate.addEventListener('click', translatePodcast);
 podcastCover.addEventListener('error', () => { podcastCover.style.visibility = 'hidden'; });
 
@@ -824,6 +872,11 @@ function updatePodcastTimes() {
 function updatePodcastPlayButton() {
   podcastPlay.innerHTML = icon(podcastAudio.paused ? 'play' : 'pause', 18);
   podcastPlay.setAttribute('aria-label', podcastAudio.paused ? '播放' : '暂停');
+  podcastPlay.title = podcastAudio.paused ? '播放' : '暂停';
+  podcastPane.classList.toggle('is-playing', !podcastAudio.paused);
+  podcastAudioState.textContent = !podcast.selectedEpisode ? '尚未选择单集'
+    : podcastAudio.ended ? '播放结束'
+      : podcastAudio.paused ? podcastAudio.currentTime > 0 ? '已暂停' : '待播放' : '正在播放';
 }
 
 function ensurePodcastAudioGraph() {
@@ -980,6 +1033,52 @@ async function togglePodcastPlay() {
   }
 }
 
+function podcastOffsetKey() {
+  return `enos.podcast.offset.v1.${podcast.selectedChannel}.${podcast.selectedEpisode?.id || ''}`;
+}
+
+function setPodcastOffset(value) {
+  podcast.offset = Math.max(-300, Math.min(300, Number(value) || 0));
+  podcastOffset.value = String(podcast.offset);
+  try { localStorage.setItem(podcastOffsetKey(), String(podcast.offset)); } catch {}
+  syncPodcast();
+}
+
+function playPodcastCue(index) {
+  const cue = podcast.cues[index];
+  if (!cue) return;
+  podcastAudio.currentTime = Math.max(0, cue.start + podcast.offset);
+  updatePodcastTimes();
+  syncPodcast();
+  if (podcastAudio.paused) togglePodcastPlay();
+}
+
+function navigatePodcastCue(direction) {
+  if (!podcast.cues.length) return;
+  const time = podcastAudio.currentTime - podcast.offset;
+  const index = direction > 0
+    ? podcast.cues.findIndex((cue) => cue.start > time + 0.05)
+    : podcast.cues.findLastIndex((cue) => cue.start < time - 0.1);
+  playPodcastCue(index >= 0 ? index : direction > 0 ? podcast.cues.length - 1 : 0);
+}
+
+podcastPrev.addEventListener('click', () => navigatePodcastCue(-1));
+podcastNext.addEventListener('click', () => navigatePodcastCue(1));
+podcastRepeat.addEventListener('click', () => {
+  const index = podcast.activeCue >= 0 ? podcast.activeCue : podcast.cues.findLastIndex((cue) => cue.start <= podcastAudio.currentTime - podcast.offset);
+  playPodcastCue(Math.max(0, index));
+});
+document.getElementById('podcast-speed').addEventListener('change', (event) => {
+  podcastAudio.defaultPlaybackRate = Number(event.target.value);
+  podcastAudio.playbackRate = Number(event.target.value);
+});
+document.getElementById('podcast-follow').addEventListener('change', (event) => {
+  podcast.follow = event.target.checked;
+  if (podcast.follow) podcastScrollToCue(podcast.activeCue);
+});
+podcastOffset.addEventListener('change', () => setPodcastOffset(podcastOffset.value));
+document.getElementById('podcast-offset-reset').addEventListener('click', () => setPodcastOffset(0));
+
 function seekPodcastRatio(ratio) {
   const duration = podcastDurationValue();
   if (!duration) return;
@@ -1025,6 +1124,7 @@ podcastWave.addEventListener('keydown', (event) => {
 });
 if ('ResizeObserver' in window) {
   new ResizeObserver(() => drawPodcastWave()).observe(podcastWave);
+  new ResizeObserver(alignPodcastSubtitleRows).observe(podcastEn.closest('.podcast-sub-columns'));
 }
 updatePodcastPlayButton();
 requestAnimationFrame(drawPodcastWave);
@@ -1845,7 +1945,9 @@ function closeBookReader({ restore = true } = {}) {
 function setTreeCollapsed(value) {
   state.treeCollapsed = Boolean(value);
   workspace.classList.toggle('tree-collapsed', state.treeCollapsed);
-  treeOpen.classList.toggle('hidden', !(state.treeCollapsed && state.view === 'videos' && state.tab === 'youtube'));
+  document.getElementById('channel-tree').inert = state.treeCollapsed;
+  treeOpen.setAttribute('aria-expanded', String(!state.treeCollapsed));
+  updateTreeOpen();
   try { localStorage.setItem(TREE_KEY, state.treeCollapsed ? '1' : '0'); } catch { /* ignore */ }
 }
 
@@ -1912,7 +2014,12 @@ function setTab(tab) {
     const active = button.dataset.tab === tab;
     button.classList.toggle('active', active);
     button.setAttribute('aria-selected', active ? 'true' : 'false');
+    button.tabIndex = active ? 0 : -1;
   }
+  const url = new URL(window.location.href);
+  if (tab === 'youtube') url.searchParams.delete('tab');
+  else url.searchParams.set('tab', tab);
+  window.history.replaceState(null, '', url);
   if (state.view !== 'videos') setView('videos');
   else renderTabState();
 }
@@ -2020,7 +2127,32 @@ treeOpen.addEventListener('click', () => setTreeCollapsed(false));
 
 for (const button of document.querySelectorAll('.studio-tab')) {
   button.addEventListener('click', () => setTab(button.dataset.tab));
+  button.addEventListener('keydown', (event) => {
+    const tabs = [...document.querySelectorAll('.studio-tab')];
+    const index = tabs.indexOf(button);
+    const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length
+      : event.key === 'ArrowLeft' ? (index - 1 + tabs.length) % tabs.length
+        : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    tabs[next].focus();
+    setTab(tabs[next].dataset.tab);
+  });
 }
+document.getElementById('channel-scrim').addEventListener('click', () => setTreeCollapsed(true));
+channelList.addEventListener('click', (event) => {
+  if (compactViewport.matches && event.target.closest('.tree-main, .tree-video')) setTreeCollapsed(true);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    document.getElementById('podcast-sync-settings').open = false;
+    if (compactViewport.matches && !state.treeCollapsed) {
+      setTreeCollapsed(true);
+      treeOpen.focus();
+    }
+  }
+});
+compactViewport.addEventListener('change', (event) => setTreeCollapsed(event.matches));
 
 chatForm.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -2038,8 +2170,7 @@ chatInput.addEventListener('input', () => {
 });
 
 try { state.treeCollapsed = localStorage.getItem(TREE_KEY) === '1'; } catch { /* ignore */ }
-workspace.classList.toggle('tree-collapsed', state.treeCollapsed);
-updateTreeOpen();
+setTreeCollapsed(compactViewport.matches || state.treeCollapsed);
 
 if (params.get('debug') === '1') {
   window.__VIDEOS_DEBUG__ = {
@@ -2055,13 +2186,37 @@ if (params.get('debug') === '1') {
       renderChannels();
       renderPreviews();
     },
+    setPodcastData(data) {
+      const { channel, episode } = data;
+      podcast.initialized = true;
+      podcast.channels = [channel];
+      podcast.episodes.set(channel.id, [episode]);
+      podcast.expanded.add(channel.id);
+      podcast.selectedChannel = channel.id;
+      podcast.selectedEpisode = episode;
+      podcastAudio.pause();
+      podcastAudio.dataset.episode = episode.id;
+      podcastAudio.src = data.audio;
+      setPodcastInfo(channel, episode);
+      podcastAudio.load();
+      podcast.cues = normalizeCues(data.cues || []);
+      setTab('podcast');
+      renderPodcastSubtitles();
+      podcastStatus.textContent = `共 ${podcast.cues.length} 句 · 双语字幕`;
+    },
+    get podcastState() {
+      return { activeCue: podcast.activeCue, activeWord: podcast.activeWord, offset: podcast.offset, follow: podcast.follow };
+    },
     get state() { return { items: state.items, meta: state.meta, channels: state.channels }; },
   };
   renderChannels();
   renderPreviews();
 } else {
   const initial = params.get('q') || '';
-  if (initial) {
+  const initialTab = params.get('tab');
+  if (initialTab === 'podcast' || initialTab === 'books') {
+    setTab(initialTab);
+  } else if (initial) {
     input.value = initial;
     runSearch(initial, { updateUrl: false });
   } else {

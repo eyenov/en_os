@@ -143,6 +143,44 @@ const CUES = (() => {
   });
 })();
 
+const PODCAST_CUES = Array.from({ length: 12 }, (_, index) => {
+  const source = CUES[index % CUES.length];
+  const start = index * 4 + 0.5;
+  const end = start + 3.2;
+  const tokens = source.en.split(' ');
+  const step = 3.2 / tokens.length;
+  return {
+    start, end, en: source.en, zh: source.zh,
+    words: tokens.map((text, wordIndex) => ({
+      text,
+      start: start + wordIndex * step,
+      end: start + (wordIndex + 1) * step - (wordIndex === 0 ? 0.12 : 0),
+    })),
+  };
+});
+
+function audioFixture(seconds = 52) {
+  const sampleRate = 8000;
+  const samples = sampleRate * seconds;
+  const buffer = Buffer.alloc(44 + samples * 2);
+  buffer.write('RIFF', 0);
+  buffer.writeUInt32LE(buffer.length - 8, 4);
+  buffer.write('WAVEfmt ', 8);
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36);
+  buffer.writeUInt32LE(samples * 2, 40);
+  for (let sample = 0; sample < samples; sample += 1) {
+    buffer.writeInt16LE(Math.round(Math.sin(sample * 2 * Math.PI * 220 / sampleRate) * 1200), 44 + sample * 2);
+  }
+  return `data:audio/wav;base64,${buffer.toString('base64')}`;
+}
+
 async function main() {
   if (!CHROME) throw new Error('Chrome/Edge not found; set CHROME_PATH.');
   await mkdir(SHOTS, { recursive: true });
@@ -176,7 +214,93 @@ async function main() {
     await sleep(400);
     await cdp.screenshot('video-results.png', true);
 
-    console.log('3. watch fixture');
+    console.log('3. podcast audio clock and controls');
+    await cdp.evaluate(`localStorage.removeItem('enos.podcast.offset.v1.clock-fixture.clock-episode')`);
+    await cdp.evaluate(`(() => {
+      const fixture = ${JSON.stringify({
+      channel: { id: 'clock-fixture', name: 'The English Edit', image: POSTER },
+      episode: { id: 'clock-episode', channelId: 'clock-fixture', title: 'Small changes, a different perspective', date: '2026-10-30', duration: '0:52', durationSeconds: 52, image: POSTER, description: 'Cities, everyday choices, and the ideas that change how we see the world.' },
+      cues: PODCAST_CUES,
+      audio: audioFixture(),
+    })};
+      const binary = atob(fixture.audio.split(',')[1]);
+      const samples = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      fixture.audio = URL.createObjectURL(new Blob([samples], { type: 'audio/wav' }));
+      window.__VIDEOS_DEBUG__.setPodcastData(fixture);
+    })()`);
+    await cdp.waitFor(`document.getElementById('podcast-audio').readyState >= 2`);
+    await cdp.evaluate(`document.getElementById('podcast-play').click()`);
+    await cdp.waitFor(`document.getElementById('podcast-audio').currentTime > 0.55 && !document.getElementById('podcast-audio').paused`);
+    const playing = await cdp.evaluate(`!document.getElementById('podcast-audio').paused && window.__VIDEOS_DEBUG__.podcastState.activeCue === 0`);
+    await cdp.evaluate(`document.getElementById('podcast-audio').pause()`);
+    const wordTime = (PODCAST_CUES[0].words[1].start + PODCAST_CUES[0].words[1].end) / 2;
+    await cdp.evaluate(`document.getElementById('podcast-audio').currentTime = ${wordTime}`);
+    await cdp.waitFor(`window.__VIDEOS_DEBUG__.podcastState.activeWord === 1`);
+    const seeking = await cdp.evaluate(`document.querySelector('#podcast-en .word.active')?.textContent === ${JSON.stringify(PODCAST_CUES[0].words[1].text)}`);
+    const gapTime = PODCAST_CUES[0].words[0].end + 0.06;
+    await cdp.evaluate(`document.getElementById('podcast-audio').currentTime = ${gapTime}`);
+    await cdp.waitFor(`window.__VIDEOS_DEBUG__.podcastState.activeWord === -1`);
+    const silence = await cdp.evaluate(`document.querySelectorAll('#podcast-en .word.active').length === 0`);
+    await cdp.evaluate(`(() => {
+      const speed = document.getElementById('podcast-speed');
+      speed.value = '1.5';
+      speed.dispatchEvent(new Event('change', { bubbles: true }));
+      const offset = document.getElementById('podcast-offset');
+      offset.value = '1';
+      offset.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('podcast-audio').currentTime = ${wordTime + 1};
+    })()`);
+    await cdp.waitFor(`window.__VIDEOS_DEBUG__.podcastState.activeWord === 1 && window.__VIDEOS_DEBUG__.podcastState.offset === 1`);
+    const calibration = await cdp.evaluate(`document.getElementById('podcast-audio').playbackRate === 1.5 && window.__VIDEOS_DEBUG__.podcastState.activeCue === 0`);
+    await cdp.evaluate(`document.getElementById('podcast-next').click()`);
+    await cdp.waitFor(`window.__VIDEOS_DEBUG__.podcastState.activeCue === 1`);
+    await cdp.evaluate(`document.getElementById('podcast-audio').pause()`);
+    const navigation = await cdp.evaluate(`Math.abs(document.getElementById('podcast-audio').currentTime - ${PODCAST_CUES[1].start + 1}) < 0.5`);
+    await cdp.evaluate(`(() => {
+      const follow = document.getElementById('podcast-follow');
+      follow.checked = false;
+      follow.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    const follow = await cdp.evaluate(`window.__VIDEOS_DEBUG__.podcastState.follow === false`);
+    let drawer = true;
+    let smallScreen = true;
+    if (MOBILE) {
+      await cdp.evaluate(`document.getElementById('tree-open').click()`);
+      drawer = await cdp.evaluate(`!document.getElementById('media-view').classList.contains('tree-collapsed') && !document.getElementById('channel-tree').inert`);
+      await cdp.evaluate(`document.getElementById('channel-scrim').click()`);
+      drawer = drawer && await cdp.evaluate(`document.getElementById('media-view').classList.contains('tree-collapsed')`);
+      const previousTitle = await cdp.evaluate(`document.getElementById('podcast-title').textContent`);
+      await cdp.evaluate(`document.getElementById('podcast-title').textContent = 'A different perspective: the surprisingly powerful everyday choices that change how we see our cities and the wider world'`);
+      await cdp.send('Emulation.setDeviceMetricsOverride', { ...VIEWPORT, width: 320, height: 568, screenWidth: 320, screenHeight: 568 });
+      await cdp.waitFor(`document.getElementById('podcast-en').clientHeight > 120`);
+      smallScreen = await cdp.evaluate(`(() => {
+        const pane = document.getElementById('podcast-pane').getBoundingClientRect();
+        const subtitles = document.getElementById('podcast-en').getBoundingClientRect();
+        const visibleHeight = Math.min(pane.bottom, subtitles.bottom) - Math.max(pane.top, subtitles.top);
+        return document.documentElement.scrollWidth <= 321 && visibleHeight > 100;
+      })()`);
+      await cdp.screenshot('podcast-small.png');
+      await cdp.evaluate(`document.getElementById('podcast-title').textContent = ${JSON.stringify(previousTitle)}`);
+      await cdp.send('Emulation.setDeviceMetricsOverride', VIEWPORT);
+    }
+    const podcastLayout = await cdp.evaluate(`(() => {
+      const canvas = document.getElementById('podcast-wave');
+      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      return {
+        noOverflow: document.documentElement.scrollWidth <= innerWidth + 1,
+        readable: document.getElementById('podcast-en').clientHeight > 120,
+        translated: ${MOBILE} ? getComputedStyle(document.querySelector('.podcast-inline-zh')).display !== 'none' : true,
+        aligned: ${MOBILE} ? true : [...document.querySelectorAll('#podcast-en .podcast-cue')].every((row, index) => Math.abs(row.getBoundingClientRect().height - document.querySelectorAll('#podcast-zh .podcast-cue')[index].getBoundingClientRect().height) < 1),
+        waveform: pixels.some((value, index) => index % 4 === 3 && value > 0),
+        title: document.getElementById('podcast-title').textContent,
+      };
+    })()`);
+    const podcastChecks = { playing, seeking, silence, calibration, navigation, follow, drawer, smallScreen, ...podcastLayout };
+    console.log('  podcast', JSON.stringify(podcastChecks));
+    await cdp.screenshot(MOBILE ? 'podcast-mobile.png' : 'podcast.png');
+    await cdp.evaluate(`document.getElementById('podcast-offset-reset').click()`);
+
+    console.log('4. watch fixture');
     await cdp.send('Page.navigate', { url: `${BASE}/watch.html?v=abc12345678&debug=1` });
     await cdp.waitFor(`window.__WATCH_DEBUG__`);
     await sleep(300);
@@ -229,7 +353,9 @@ async function main() {
       ok: state.cues === 4 && state.activeCue === 0 && state.activeWord >= 0
         && state.activeWordText && state.activeZhChars > 0
         && state.enCues === 4 && state.zhCues === 4
-        && state.scrollWidth <= state.innerWidth + 1,
+        && state.scrollWidth <= state.innerWidth + 1
+        && Object.entries(podcastChecks).every(([key, value]) => key === 'title' || value === true),
+      podcast: podcastChecks,
       state,
       consoleErrors: cdp.logs,
       exceptions: cdp.exceptions,
