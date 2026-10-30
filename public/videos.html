@@ -16,9 +16,6 @@
   <a class="skip-link" href="#media-view">跳到学习内容</a>
   <div class="studio-shell">
     <aside class="studio-rail" aria-label="主导航">
-      <a class="studio-brand" href="/videos.html" aria-label="EnOS 视频工作台">
-        <img src="/icon.svg" alt="" />
-      </a>
       <nav class="studio-rail-nav">
         <button class="rail-btn active" id="rail-videos" type="button" aria-current="page">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -35,19 +32,10 @@
           <span>对话</span>
         </button>
       </nav>
-      <a class="rail-home" href="/" title="学习主页" aria-label="学习主页"><span data-icon="target"></span></a>
-      <div class="studio-rail-foot" aria-hidden="true">ENOS</div>
+      <button class="rail-btn rail-settings" id="rail-settings" type="button" title="设置" aria-label="设置"><span data-icon="settings"></span><span>设置</span></button>
     </aside>
 
     <div class="studio-main">
-      <div class="studio-topbar">
-        <a class="studio-wordmark" href="/videos.html">EnOS<span>STUDIO</span></a>
-        <span class="studio-workspace-name">学习工作台</span>
-        <div class="studio-topbar-actions">
-          <span class="studio-personal">个人空间</span>
-          <a class="studio-icon-button" href="/#/settings" title="模型与偏好设置" aria-label="模型与偏好设置"><span data-icon="settings"></span></a>
-        </div>
-      </div>
       <header class="studio-tabs" role="tablist" aria-label="内容类型">
         <button class="studio-tab active" id="tab-youtube" type="button" role="tab" aria-selected="true" aria-controls="youtube-pane" data-tab="youtube"><span data-icon="play"></span>YouTube</button>
         <button class="studio-tab" id="tab-podcast" type="button" role="tab" aria-selected="false" aria-controls="podcast-pane" data-tab="podcast"><span data-icon="headphones"></span>播客</button>
@@ -223,6 +211,8 @@
         </section>
       </section>
 
+      <section class="settings-view hidden" id="settings-view" aria-label="设置" tabindex="-1"></section>
+
       <section class="chat-view hidden" id="chat-view">
         <div class="chat-shell">
           <div class="chat-heading"><span data-icon="sparkles"></span><h1>学习对话</h1><span>EnOS Agent</span></div>
@@ -245,6 +235,7 @@
   </div>
 
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <div id="modal-root"></div>
   <script type="module" src="/js/videos.js"></script>
 </body>
 </html>

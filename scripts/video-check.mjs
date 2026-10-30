@@ -209,12 +209,39 @@ async function main() {
     await sleep(500);
     await cdp.screenshot('video-search.png');
 
-    console.log('2. search results fixture');
+    console.log('2. workspace navigation and settings');
+    await cdp.evaluate(`document.getElementById('rail-settings').click()`);
+    await cdp.waitFor(`document.querySelector('#settings-view .provider-tab')`);
+    const workspaceChecks = await cdp.evaluate(`(() => {
+      const rail = document.querySelector('.studio-rail').getBoundingClientRect();
+      const settings = document.getElementById('rail-settings').getBoundingClientRect();
+      const view = document.getElementById('settings-view');
+      return {
+        tabsAtTop: document.querySelector('.studio-tabs').getBoundingClientRect().top === 0,
+        leftRail: rail.left === 0 && rail.height === innerHeight,
+        settingsAtBottom: settings.bottom > innerHeight - 80 && settings.right <= rail.right,
+        cleanChrome: !document.querySelector('.studio-topbar, .studio-brand, .studio-wordmark, .rail-home, #nav'),
+        settingsLoaded: !view.classList.contains('hidden') && document.querySelectorAll('#settings-view .provider-tab').length > 0,
+        noOverflow: document.documentElement.scrollWidth <= innerWidth + 1 && view.scrollWidth <= view.clientWidth + 1,
+      };
+    })()`);
+    await cdp.screenshot(MOBILE ? 'workspace-settings-mobile.png' : 'workspace-settings.png');
+    await cdp.send('Page.navigate', { url: `${BASE}/?debug=1#/settings` });
+    await cdp.waitFor(`window.__VIDEOS_DEBUG__ && document.querySelector('#settings-view .provider-tab')`);
+    workspaceChecks.legacySettings = await cdp.evaluate(`new URL(location.href).searchParams.get('view') === 'settings' && !document.querySelector('#nav')`);
+    await cdp.send('Page.reload');
+    await cdp.waitFor(`window.__VIDEOS_DEBUG__ && document.querySelector('#settings-view .provider-tab')`);
+    workspaceChecks.settingsReloads = await cdp.evaluate(`!document.getElementById('settings-view').classList.contains('hidden')`);
+    await cdp.evaluate(`document.getElementById('tab-youtube').click()`);
+    workspaceChecks.returnsToContent = await cdp.evaluate(`document.getElementById('settings-view').classList.contains('hidden') && !document.getElementById('youtube-pane').classList.contains('hidden')`);
+    console.log('  workspace', JSON.stringify(workspaceChecks));
+
+    console.log('3. search results fixture');
     await cdp.evaluate(`window.__VIDEOS_DEBUG__.render(${JSON.stringify(SEARCH_ITEMS)}, { query: 'IELTS listening', source: 'youtube-web' })`);
     await sleep(400);
     await cdp.screenshot('video-results.png', true);
 
-    console.log('3. podcast audio clock and controls');
+    console.log('4. podcast audio clock and controls');
     await cdp.evaluate(`localStorage.removeItem('enos.podcast.offset.v1.clock-fixture.clock-episode')`);
     await cdp.evaluate(`(() => {
       const fixture = ${JSON.stringify({
@@ -300,7 +327,7 @@ async function main() {
     await cdp.screenshot(MOBILE ? 'podcast-mobile.png' : 'podcast.png');
     await cdp.evaluate(`document.getElementById('podcast-offset-reset').click()`);
 
-    console.log('4. watch fixture');
+    console.log('5. watch fixture');
     await cdp.send('Page.navigate', { url: `${BASE}/watch.html?v=abc12345678&debug=1` });
     await cdp.waitFor(`window.__WATCH_DEBUG__`);
     await sleep(300);
@@ -354,7 +381,9 @@ async function main() {
         && state.activeWordText && state.activeZhChars > 0
         && state.enCues === 4 && state.zhCues === 4
         && state.scrollWidth <= state.innerWidth + 1
-        && Object.entries(podcastChecks).every(([key, value]) => key === 'title' || value === true),
+        && Object.entries(podcastChecks).every(([key, value]) => key === 'title' || value === true)
+        && Object.values(workspaceChecks).every((value) => value === true),
+      workspace: workspaceChecks,
       podcast: podcastChecks,
       state,
       consoleErrors: cdp.logs,

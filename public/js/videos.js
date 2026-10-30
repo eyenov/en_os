@@ -16,6 +16,7 @@ import {
 import { getSettings } from './store.js';
 import { activeCharCount, cueProgress, findCueIndex, findWordIndex, formatTimestamp, normalizeCues } from './subtitle-sync.js';
 import { h, icon, toast } from './ui.js';
+import { renderSettings } from './views/settings.js';
 
 const form = document.getElementById('video-search');
 const input = document.getElementById('video-q');
@@ -37,7 +38,17 @@ const treeOpen = document.getElementById('tree-open');
 const treeCollapse = document.getElementById('tree-collapse');
 const railVideos = document.getElementById('rail-videos');
 const railChat = document.getElementById('rail-chat');
+const railSettings = document.getElementById('rail-settings');
+const settingsView = document.getElementById('settings-view');
+let settingsReady = false;
 const params = new URLSearchParams(window.location.search);
+if (window.location.hash.startsWith('#/')) {
+  const legacyRoute = window.location.hash.slice(2).split('?')[0];
+  if (legacyRoute === 'settings') params.set('view', 'settings');
+  const url = new URL('/videos.html', window.location.origin);
+  url.search = params.toString();
+  window.history.replaceState(null, '', url);
+}
 
 const SUGGESTIONS = ['TED-Ed', 'BBC Learning English', 'IELTS listening', 'National Geographic', 'Science explainer'];
 const TREE_KEY = 'enos.videos.treeCollapsed.v1';
@@ -1466,7 +1477,10 @@ async function translateDetail() {
 function detailChatEmpty() {
   detailMessages.replaceChildren(h('div', { class: 'detail-empty' },
     h('strong', {}, detail.chatAvailable ? '问 Agent 这段视频' : '配置 API Key 后开始对话'),
-    detail.chatAvailable ? h('p', {}, '可以问语法、词汇、总结或让 Agent 解释当前句。') : h('p', {}, h('a', { href: '/#/settings' }, '去设置 →')),
+    detail.chatAvailable ? h('p', {}, '可以问语法、词汇、总结或让 Agent 解释当前句。') : h('p', {}, h('a', { href: '/videos.html?view=settings', onclick: (event) => {
+      event.preventDefault();
+      setView('settings');
+    } }, '去设置 →')),
   ));
 }
 
@@ -1664,7 +1678,10 @@ function renderError(error, query) {
       h('p', {}, error.message || '无法连接 YouTube。'),
       h('div', { class: 'btn-row' },
         h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: () => runSearch(query) }, '重试'),
-        h('a', { class: 'btn btn-ghost btn-sm', href: '/#/settings' }, '去设置'),
+        h('a', { class: 'btn btn-ghost btn-sm', href: '/videos.html?view=settings', onclick: (event) => {
+          event.preventDefault();
+          setView('settings');
+        } }, '去设置'),
       ),
     ),
   ));
@@ -1985,20 +2002,52 @@ function renderTabState() {
   }
 }
 
+async function ensureStudioSettings() {
+  if (settingsReady) return;
+  settingsReady = true;
+  settingsView.replaceChildren(h('p', { class: 'settings-loading' }, '正在加载设置…'));
+  try {
+    await getHealth().catch(() => null);
+    const settings = await renderSettings({
+      navigate: () => setView('videos'),
+      updateStatusPill: () => { chat.initialized = false; },
+    });
+    settingsView.replaceChildren(settings.el);
+  } catch (error) {
+    settingsReady = false;
+    settingsView.replaceChildren(h('div', { class: 'settings-loading' },
+      h('p', {}, error.message || '设置加载失败'),
+      h('button', { class: 'btn btn-soft', type: 'button', onclick: ensureStudioSettings }, '重试'),
+    ));
+  }
+}
+
 function setView(view) {
   state.view = view;
   const videos = view === 'videos';
-  railVideos.classList.toggle('active', videos);
-  railChat.classList.toggle('active', !videos);
-  railVideos.setAttribute('aria-current', videos ? 'page' : 'false');
-  chatView.classList.toggle('hidden', videos);
+  const chatting = view === 'chat';
+  const configuring = view === 'settings';
+  for (const [button, active] of [[railVideos, videos], [railChat, chatting], [railSettings, configuring]]) {
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  }
+  chatView.classList.toggle('hidden', !chatting);
+  settingsView.classList.toggle('hidden', !configuring);
+  const url = new URL(window.location.href);
+  if (videos) url.searchParams.delete('view');
+  else url.searchParams.set('view', view);
+  window.history.replaceState(null, '', url);
   if (!videos) {
     mediaView.classList.add('hidden');
     tabEmpty.classList.add('hidden');
     podcastAudio.pause();
     if (state.detailOpen) closeVideoDetail({ restore: false });
     if (bookState.readerOpen) closeBookReader({ restore: false });
-    ensureChat();
+    if (chatting) {
+      chat.initialized = false;
+      ensureChat();
+    } else if (configuring) ensureStudioSettings();
     updateTreeOpen();
     return;
   }
@@ -2041,8 +2090,11 @@ function chatEmptyNode() {
     h('strong', {}, chat.available ? '开始一段对话' : '配置 API Key 后开始对话'),
     h('p', {}, chat.available
       ? '可以问语法、词汇、写作，或让 Agent 解释一段英文。'
-      : '在设置页填入模型 Key，然后刷新页面。'),
-    chat.available ? null : h('p', {}, h('a', { href: '/#/settings' }, '去设置 →')),
+      : '尚未配置模型 Key。'),
+    chat.available ? null : h('p', {}, h('a', { href: '/videos.html?view=settings', onclick: (event) => {
+      event.preventDefault();
+      setView('settings');
+    } }, '去设置 →')),
   );
 }
 
@@ -2122,6 +2174,7 @@ form.addEventListener('submit', (event) => {
 
 railVideos.addEventListener('click', () => setView('videos'));
 railChat.addEventListener('click', () => setView('chat'));
+railSettings.addEventListener('click', () => setView('settings'));
 treeCollapse.addEventListener('click', () => setTreeCollapsed(true));
 treeOpen.addEventListener('click', () => setTreeCollapsed(false));
 
@@ -2211,7 +2264,7 @@ if (params.get('debug') === '1') {
   };
   renderChannels();
   renderPreviews();
-} else {
+} else if (!['settings', 'chat'].includes(params.get('view'))) {
   const initial = params.get('q') || '';
   const initialTab = params.get('tab');
   if (initialTab === 'podcast' || initialTab === 'books') {
@@ -2223,6 +2276,8 @@ if (params.get('debug') === '1') {
     runSearch('IELTS listening', { updateUrl: false });
   }
 }
+
+if (['settings', 'chat'].includes(params.get('view'))) setView(params.get('view'));
 
 window.addEventListener('error', (event) => {
   if (event.error?.name === 'AbortError') return;
