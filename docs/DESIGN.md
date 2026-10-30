@@ -407,14 +407,14 @@ YouTube 的机器人验证是**瞬时**的：同一个视频可能第一次 `LOG
 1. 拉取 RSS，按 `<item>` 提取 `title / description / pubDate / itunes:duration / itunes:image`；
 2. 只保留同时有音频和 `text/vtt` transcript 的 episode，最多 24 集/频道；
 3. `GET /api/podcasts/channels` 返回频道元数据；`GET /api/podcasts/episodes?channel=` 返回单集；`GET /api/podcasts/episode?channel=&episode=` 拉取 VTT 并解析；
-4. VTT 解析支持 `HH:MM:SS.mmm` / `MM:SS.mmm`，跳过 cue 标识与 `<v>` 标签，短 cue 合并到 ≤120 字符 / 12 秒，再按词长分配词级时间；
+4. VTT 解析支持 `HH:MM:SS.mmm` / `MM:SS.mmm`，跳过 cue 标识与 `<v>` 标签；有内嵌 `<00:...>` 词级时间时直接保留；没有时由 `server/word-timing.mjs` 在原始片段内按音节、功能词和标点停顿估算。短 cue 只在间隔 ≤0.12 秒时合并，绝不跨过真实停顿；
 5. feed 缓存 10 分钟、VTT 缓存 30 分钟；音频经 `/api/podcasts/audio` 以 Range 流式代理（转发 `Range / Content-Range / Content-Length`，使用宽松 UA 避免 Buzzsprout 拒绝 Chrome UA），浏览器只访问同源地址；`img-src` 放行封面域。
 
 前端播客视图：
 
 - 左侧频道列表：圆形封面、频道名、集数徽标、下载最新一期；默认不展开单集，点击箭头展开；
 - 右侧顶部自定义播放器：播放/暂停、时间、可点击/拖动的 Web Audio AnalyserNode 动态曲线；音频元素隐藏，MediaElementSource → Analyser → destination；
-- 下方 English / 中文两列独立滚动，使用与视频页相同的 `normalizeCues / findCueIndex / findWordIndex / activeCharCount`，按音频 `currentTime` 做词级/逐字高亮；
+- 下方 English / 中文两列独立滚动，使用与视频页相同的 `normalizeCues / findCueIndex / findWordIndex / activeCharCount`，按**扣除输出延迟**后的播放时间做词级/逐字高亮；`AudioContext.outputLatency + baseLatency` 自动补偿，页面内的「字幕延迟」可再手动微调（±3 秒）；
 - 点击字幕 seek 音频；中文复用视频翻译接口；长单集按 200 句分块并显示进度。
 
 ---

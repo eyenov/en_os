@@ -558,7 +558,7 @@ function setPodcastInfo(channel, episode) {
   podcastDownload.href = `/api/podcasts/audio?channel=${encodeURIComponent(channel.id)}&episode=${encodeURIComponent(episode.id)}&download=1`;
   podcastDownload.classList.remove('hidden');
   podcast.offset = 0;
-  try { podcast.offset = Math.max(-300, Math.min(300, Number(localStorage.getItem(podcastOffsetKey())) || 0)); } catch {}
+  try { podcast.offset = Math.max(-3, Math.min(3, Number(localStorage.getItem(podcastOffsetKey())) || 0)); } catch {}
   podcastOffset.value = String(podcast.offset);
   if (podcastAudio.dataset.episode !== episode.id) {
     podcastAudio.pause();
@@ -654,9 +654,23 @@ function setPodcastActiveCue(index) {
   }
 }
 
+function podcastOutputLatency() {
+  const ctx = podcast.audioCtx;
+  if (!ctx) return 0;
+  return Math.min(0.4, Math.max(0, (Number(ctx.outputLatency) || 0) + (Number(ctx.baseLatency) || 0)));
+}
+
+function podcastPlaybackTime() {
+  const raw = Number(podcastAudio.currentTime) || 0;
+  // <audio> currentTime is the media clock; the samples actually leaving the
+  // Web Audio graph (especially Bluetooth) are a little later. Align subtitles
+  // to what the listener hears, not to the media clock.
+  return Math.max(0, raw - podcast.offset - podcastOutputLatency());
+}
+
 function syncPodcast() {
   if (!podcast.cues.length) return;
-  const time = (Number(podcastAudio.currentTime) || 0) - podcast.offset;
+  const time = podcastPlaybackTime();
   const index = findCueIndex(podcast.cues, time);
   if (index !== podcast.activeCue) setPodcastActiveCue(index);
   if (index < 0) return;
@@ -1038,7 +1052,7 @@ function podcastOffsetKey() {
 }
 
 function setPodcastOffset(value) {
-  podcast.offset = Math.max(-300, Math.min(300, Number(value) || 0));
+  podcast.offset = Math.max(-3, Math.min(3, Number(value) || 0));
   podcastOffset.value = String(podcast.offset);
   try { localStorage.setItem(podcastOffsetKey(), String(podcast.offset)); } catch {}
   syncPodcast();
@@ -1047,7 +1061,7 @@ function setPodcastOffset(value) {
 function playPodcastCue(index) {
   const cue = podcast.cues[index];
   if (!cue) return;
-  podcastAudio.currentTime = Math.max(0, cue.start + podcast.offset);
+  podcastAudio.currentTime = Math.max(0, cue.start + podcast.offset + podcastOutputLatency());
   updatePodcastTimes();
   syncPodcast();
   if (podcastAudio.paused) togglePodcastPlay();
@@ -1055,7 +1069,7 @@ function playPodcastCue(index) {
 
 function navigatePodcastCue(direction) {
   if (!podcast.cues.length) return;
-  const time = podcastAudio.currentTime - podcast.offset;
+  const time = podcastPlaybackTime();
   const index = direction > 0
     ? podcast.cues.findIndex((cue) => cue.start > time + 0.05)
     : podcast.cues.findLastIndex((cue) => cue.start < time - 0.1);
@@ -1065,7 +1079,7 @@ function navigatePodcastCue(direction) {
 podcastPrev.addEventListener('click', () => navigatePodcastCue(-1));
 podcastNext.addEventListener('click', () => navigatePodcastCue(1));
 podcastRepeat.addEventListener('click', () => {
-  const index = podcast.activeCue >= 0 ? podcast.activeCue : podcast.cues.findLastIndex((cue) => cue.start <= podcastAudio.currentTime - podcast.offset);
+  const index = podcast.activeCue >= 0 ? podcast.activeCue : podcast.cues.findLastIndex((cue) => cue.start <= podcastPlaybackTime());
   playPodcastCue(Math.max(0, index));
 });
 document.getElementById('podcast-speed').addEventListener('change', (event) => {
@@ -1345,11 +1359,19 @@ function syncDetail() {
 
 function startDetailTicker() {
   stopDetailTicker();
-  detail.ticker = setInterval(syncDetail, 100);
+  let last = 0;
+  const tick = (timestamp) => {
+    if (timestamp - last >= 50) {
+      last = timestamp;
+      syncDetail();
+    }
+    detail.ticker = requestAnimationFrame(tick);
+  };
+  detail.ticker = requestAnimationFrame(tick);
 }
 
 function stopDetailTicker() {
-  if (detail.ticker) clearInterval(detail.ticker);
+  if (detail.ticker) cancelAnimationFrame(detail.ticker);
   detail.ticker = null;
 }
 

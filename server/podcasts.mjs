@@ -1,4 +1,5 @@
 import { HttpError } from './providers.mjs';
+import { distributeWords, tokenizeTimedText } from './word-timing.mjs';
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 const FEED_TTL = 10 * 60_000;
@@ -206,34 +207,17 @@ function parseVttTime(value) {
   return NaN;
 }
 
-function wordTokens(text) {
-  return String(text).match(/\S+/g) || [];
-}
-
-function distributeWords(tokens, start, end) {
-  if (end <= start) return [];
-  const total = tokens.reduce((sum, token) => sum + Math.max(2, token.length), 0) || 1;
-  let cursor = start;
-  return tokens.map((text, index) => {
-    const weight = Math.max(2, text.length);
-    const wordEnd = index === tokens.length - 1 ? end : Math.min(end, cursor + ((end - start) * weight) / total);
-    const word = { text, start: Math.round(cursor * 1000) / 1000, end: Math.round(wordEnd * 1000) / 1000 };
-    cursor = wordEnd;
-    return word;
-  });
-}
-
 function parseVttWords(content, start, end) {
   const words = [];
   let cursor = start;
   let offset = 0;
   for (const match of content.matchAll(/<((?:\d{2,}:)?\d{2}:\d{2}\.\d{3})>/g)) {
     const boundary = Math.max(cursor, Math.min(end, parseVttTime(match[1])));
-    words.push(...distributeWords(wordTokens(stripHtml(content.slice(offset, match.index))), cursor, boundary));
+    words.push(...distributeWords(tokenizeTimedText(stripHtml(content.slice(offset, match.index))), cursor, boundary));
     cursor = boundary;
     offset = match.index + match[0].length;
   }
-  words.push(...distributeWords(wordTokens(stripHtml(content.slice(offset))), cursor, end));
+  words.push(...distributeWords(tokenizeTimedText(stripHtml(content.slice(offset))), cursor, end));
   return words;
 }
 
@@ -259,7 +243,7 @@ export function parseVtt(text) {
   for (const cue of cues) {
     const last = merged.at(-1);
     const canMerge = last
-      && cue.start - last.end < 1.2
+      && cue.start - last.end <= 0.12
       && cue.end - last.start <= 12
       && last.text.length + cue.text.length <= 120
       && !/[.!?]["')\]]?$/.test(last.text);

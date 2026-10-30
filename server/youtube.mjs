@@ -9,6 +9,7 @@
  * Google directly (the iframe player is the only exception).
  */
 import { createChatCompletion, HttpError, extractJSON, readChatJSON } from './providers.mjs';
+import { distributeWords as distributeTimedWords } from './word-timing.mjs';
 
 const YOUTUBE = 'https://www.youtube.com';
 const API = 'https://www.googleapis.com/youtube/v3';
@@ -402,19 +403,6 @@ function wordTokens(value = '') {
     .filter((token) => token && /[\p{L}\p{N}]/u.test(token));
 }
 
-function distributeWords(tokens, from, to) {
-  const weights = tokens.map((token) => Math.max(2, token.replace(/[^\p{L}\p{N}]/gu, '').length));
-  const total = weights.reduce((sum, weight) => sum + weight, 0) || 1;
-  const span = Math.max(0.15, to - from);
-  let cursor = from;
-  return tokens.map((text, index) => {
-    const duration = Math.max(0.06, (span * weights[index]) / total);
-    const start = cursor;
-    cursor = Math.min(to, cursor + duration);
-    return { text, start: Math.round(start * 1000) / 1000, end: Math.round(cursor * 1000) / 1000 };
-  });
-}
-
 /** Parse YouTube timedtext JSON3 into cues with word-level timings. */
 export function parseTimedText(payload) {
   const events = Array.isArray(payload?.events) ? payload.events : [];
@@ -431,7 +419,7 @@ export function parseTimedText(payload) {
     if (!hasOffsets) {
       const tokens = segs.flatMap((seg) => wordTokens(decodeHtml(seg.utf8 || '')));
       if (!tokens.length) continue;
-      words.push(...distributeWords(tokens, start, end));
+      words.push(...distributeTimedWords(tokens, start, end));
     } else {
       for (let index = 0; index < segs.length; index += 1) {
         const seg = segs[index];
@@ -450,7 +438,7 @@ export function parseTimedText(payload) {
         } else {
           segStart = words.length ? words[words.length - 1].end : start;
         }
-        words.push(...distributeWords(tokens, segStart, segEnd));
+        words.push(...distributeTimedWords(tokens, segStart, segEnd));
       }
     }
 
@@ -549,7 +537,7 @@ export function segmentsToCues(segments = []) {
     const tokens = wordTokens(text);
     if (!tokens.length) continue;
     const end = start + Math.max(0.15, duration);
-    const words = distributeWords(tokens, start, end);
+    const words = distributeTimedWords(tokens, start, end);
     cues.push({ start, end, text: words.map((word) => word.text).join(' '), words });
   }
   return cues;

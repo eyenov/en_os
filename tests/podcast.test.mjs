@@ -26,7 +26,7 @@ test('parses podcast VTT cues and distributes word timings', () => {
   assert.ok(cues[2].words.at(-1).end <= 10.24);
 });
 
-test('merging podcast cues preserves their original timing anchors and pauses', () => {
+test('podcast VTT keeps a real pause instead of merging across it', () => {
   const cues = parseVtt(`WEBVTT
 
 00:00:01.000 --> 00:00:02.000
@@ -35,12 +35,12 @@ Hello there
 00:00:02.800 --> 00:00:06.000
 this is a much longer sentence.
 `);
-  assert.equal(cues.length, 1);
+  assert.equal(cues.length, 2);
   assert.equal(cues[0].words[0].start, 1);
   assert.equal(cues[0].words[1].end, 2);
-  assert.equal(cues[0].words[2].start, 2.8);
-  assert.equal(cues[0].words.at(-1).text, 'sentence.');
-  assert.equal(cues[0].words.at(-1).end, 6);
+  assert.equal(cues[1].words[0].start, 2.8);
+  assert.equal(cues[1].words.at(-1).text, 'sentence.');
+  assert.equal(cues[1].words.at(-1).end, 6);
 });
 
 test('podcast VTT retains inline word timestamps instead of redistributing them', () => {
