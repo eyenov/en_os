@@ -307,7 +307,7 @@ async function handleYoutubeTranslateFree(req, res) {
 async function handleStatic(req, res, urlPath) {
   let filePath;
   if (urlPath === '/' || urlPath === '/index.html') {
-    filePath = path.join(PUBLIC_DIR, 'index.html');
+    filePath = path.join(PUBLIC_DIR, 'videos.html');
   } else if (urlPath === '/report' || urlPath === '/report/') {
     filePath = path.join(PUBLIC_DIR, 'report.html');
   } else if (urlPath === '/videos' || urlPath === '/videos/') {

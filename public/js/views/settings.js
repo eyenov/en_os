@@ -168,7 +168,7 @@ export async function renderSettings(ctx) {
       healthNote.innerHTML = `${icon('check', 16)}<span>${hasEnv ? '服务端环境中检测到该服务商的密钥。' : '密钥已在本次会话中，可以点“测试连接”验证。'}</span>`;
     } else {
       healthNote.className = 'callout';
-      healthNote.innerHTML = `${icon('info', 16)}<span>还没有 Key 也可以完整学习，只是不会做 AI 场景改写与 AI 评分。搜索会走维基百科兜底。</span>`;
+      healthNote.innerHTML = `${icon('info', 16)}<span>尚未配置模型密钥。</span>`;
     }
   }
 
@@ -257,7 +257,6 @@ export async function renderSettings(ctx) {
     h('h3', {}, h('span', { html: icon('lock', 18) }), '密钥与隐私'),
     h('div', { class: 'callout', style: 'margin-top:10px', html: `${icon('info', 16)}<span>EnOS 没有账号系统。Key 存在 localStorage，随每次请求发送到本机运行的 Node 服务，再由服务转发给对应厂商。关闭页面后不会上传到任何第三方服务器。</span>` }),
     h('div', { class: 'callout', style: 'margin-top:8px', html: `${icon('search', 16)}<span>联网搜索优先使用服务商能力：DeepSeek <code>/v1/tools/search</code>、Kimi <code>/v1/tools/search</code>、智谱 <code>/web_search</code>；无法使用时自动切换到维基百科与 DuckDuckGo。</span>` }),
-    h('p', { class: 'small faint', style: 'margin-top:10px' }, '没有任何 Key 时，8 步任务与报告仍可完整使用：本地引擎会从 100 词库和场景模板生成内容。'),
   );
 
   el.append(
@@ -279,16 +278,6 @@ export async function renderSettings(ctx) {
       ),
       h('div', {},
         explainer,
-        h('div', { class: 'card settings-card' },
-          h('h3', {}, h('span', { html: icon('bulb', 18) }), '没有 Key 怎么办'),
-          h('p', { class: 'small muted', style: 'margin-top:8px' }, '直接回首页开始学习。本地引擎会：'),
-          h('ul', { class: 'small muted', style: 'margin:8px 0 0 18px;padding:0;line-height:1.8' },
-            h('li', {}, '从 100 个核心词中挑出与你输入最相关的 8 个'),
-            h('li', {}, '生成 8 个不超过 5 分钟的任务与量化判定'),
-            h('li', {}, '用浏览器语音朗读与识别完成跟读、对话'),
-            h('li', {}, '输出可打印的独立学习报告'),
-          ),
-        ),
       ),
     ),
   );

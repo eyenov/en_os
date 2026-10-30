@@ -172,11 +172,18 @@ test('health exposes providers without leaking keys', async () => {
   assert.ok(data.providers.every((provider) => !('apiKey' in provider)));
 });
 
-test('homepage, CSP and static data are served', async () => {
+test('workspace homepage, CSP and static data are served', async () => {
   const response = await fetch(`${BASE}/`);
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-security-policy') || '', /default-src 'self'/);
-  assert.match(await response.text(), /EnOS/);
+  const homepage = await response.text();
+  assert.match(homepage, /id="rail-settings"/);
+  assert.match(homepage, /id="tab-youtube"/);
+  assert.doesNotMatch(homepage, /class="studio-topbar"|data-route="(?:home|listening|reports)"/);
+
+  const legacyIndex = await fetch(`${BASE}/index.html`);
+  assert.equal(legacyIndex.status, 200);
+  assert.match(await legacyIndex.text(), /id="rail-settings"/);
 
   const data = await fetch(`${BASE}/data/core100.json`);
   assert.equal(data.status, 200);
