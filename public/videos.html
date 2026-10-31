@@ -67,6 +67,7 @@
           <header class="podcast-top">
             <h1 id="podcast-title">播客</h1>
             <div class="podcast-title-actions">
+              <button class="studio-icon-button shadowing-toggle" id="podcast-shadowing" type="button" title="开始语音跟读" aria-label="语音跟读" aria-pressed="false" disabled><span data-icon="mic"></span></button>
               <button class="studio-icon-button" id="podcast-details" type="button" title="详情信息" aria-label="详情信息" aria-haspopup="dialog" disabled><span data-icon="info"></span></button>
               <details class="sync-settings" id="podcast-sync-settings">
                 <summary class="studio-icon-button" title="播放设置" aria-label="播放设置"><span data-icon="settings"></span></summary>
@@ -95,6 +96,7 @@
             <button class="studio-icon-button podcast-repeat" id="podcast-repeat" type="button" title="重听当前句" aria-label="重听当前句" disabled><span data-icon="refresh"></span></button>
             <audio id="podcast-audio" preload="metadata"></audio>
           </div>
+          <div class="shadowing-bar hidden" id="podcast-shadowing-bar" aria-label="播客跟读"></div>
           <div class="podcast-subtitles">
             <span id="podcast-position" class="sr-only">00 / 00</span>
             <p id="podcast-status" class="sr-only" role="status">正在准备字幕</p>
@@ -118,13 +120,16 @@
               <span id="detail-status" class="sr-only"></span>
             </div>
             <button class="btn btn-soft btn-sm hidden" id="detail-translate" type="button" title="重试翻译" aria-label="重试翻译"><span data-icon="refresh"></span><span class="detail-button-label">重试翻译</span></button>
+            <button class="btn btn-soft btn-sm shadowing-toggle" id="detail-shadowing" type="button" title="开始语音跟读" aria-label="语音跟读" aria-pressed="false" disabled><span data-icon="mic"></span><span class="detail-button-label">跟读</span></button>
             <button class="btn btn-ghost btn-sm detail-export" id="detail-export" type="button" title="导出字幕" aria-label="导出字幕"><span data-icon="download"></span><span class="detail-button-label">导出字幕</span></button>
           </div>
+          <div class="shadowing-bar hidden" id="detail-shadowing-bar" aria-label="视频跟读"></div>
           <div class="detail-body" id="detail-body">
             <div class="detail-left" id="detail-left">
               <div class="detail-player-shell">
                 <div id="detail-player" class="detail-player-mount"></div>
                 <div id="detail-fallback" class="detail-fallback hidden"></div>
+                <span class="detail-silent-badge" aria-hidden="true">原声静音</span>
               </div>
               <div class="detail-agent" id="detail-agent">
                 <div class="detail-messages" id="detail-messages" aria-live="polite"></div>

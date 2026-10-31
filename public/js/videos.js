@@ -14,6 +14,7 @@ import {
   translateVideoCaptionsFree,
 } from './api.js';
 import { getSettings } from './store.js';
+import { ShadowingTracker, SilentMediaFollower, SpeechSession } from './shadowing.js';
 import { activeCharCount, cueProgress, findCueIndex, findWordIndex, formatTimestamp, normalizeCues, serializeSrt } from './subtitle-sync.js';
 import { h, icon, toast } from './ui.js';
 import { renderSettings } from './views/settings.js';
@@ -36,6 +37,8 @@ const treeCollapse = document.getElementById('tree-collapse');
 const railSettings = document.getElementById('rail-settings');
 const settingsView = document.getElementById('settings-view');
 let settingsReady = false;
+let practice = null;
+let speechSession = null;
 const params = new URLSearchParams(window.location.search);
 if (window.location.hash.startsWith('#/')) {
   const legacyRoute = window.location.hash.slice(2).split('?')[0];
@@ -180,6 +183,272 @@ const bookState = {
   requestSeq: 0,
   error: '',
 };
+
+const practicePanels = { detail: createPracticePanel('detail'), podcast: createPracticePanel('podcast') };
+
+function practiceFor(kind) {
+  return practice?.kind === kind ? practice : null;
+}
+
+function createPracticePanel(kind) {
+  const root = document.getElementById(`${kind}-shadowing-bar`);
+  const status = h('span', { class: 'shadowing-status-text', role: 'status' });
+  const stats = h('span', { class: 'shadowing-stats' });
+  const next = h('strong');
+  const transcript = h('span', { class: 'shadowing-transcript' });
+  const progress = h('progress', { max: 1, value: 0, 'aria-label': '跟读进度' });
+  const command = (name, label, handler) => h('button', {
+    class: 'studio-icon-button', type: 'button', title: label, 'aria-label': label, onclick: handler,
+  }, h('span', { html: icon(name, 17) }));
+  const repeat = command('refresh', '重读当前句', () => seekPracticeCue(practice?.position.cueIndex || 0));
+  const skip = command('arrowRight', '下一句', () => seekPracticeCue((practice?.position.cueIndex || 0) + 1));
+  const listen = command('pause', '暂停麦克风', togglePracticeListening);
+  const close = command('close', '结束跟读', () => stopPractice());
+  root.replaceChildren(
+    h('div', { class: 'shadowing-top' },
+      h('div', { class: 'shadowing-status' }, h('span', { class: 'shadowing-signal', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')), status),
+      stats,
+      h('div', { class: 'shadowing-commands' }, repeat, skip, listen, close),
+    ),
+    h('div', { class: 'shadowing-bottom' }, h('span', { class: 'shadowing-prompt' }, h('small', {}, '下一词'), next), transcript),
+    progress,
+  );
+  return { root, status, stats, next, transcript, progress, listen, skip };
+}
+
+function updatePracticeControls() {
+  const supported = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition) && window.isSecureContext;
+  for (const kind of ['detail', 'podcast']) {
+    const button = document.getElementById(`${kind}-shadowing`);
+    const ready = kind === 'detail' ? detail.playerReady && detail.cues.length > 0 : Boolean(podcast.selectedEpisode && podcast.cues.length);
+    const active = Boolean(practiceFor(kind));
+    button.disabled = !supported || !ready;
+    button.setAttribute('aria-pressed', String(active));
+    button.title = !supported ? '语音识别需要支持此功能的浏览器与安全连接' : !ready ? '字幕与播放器尚未准备好' : active ? '结束跟读并恢复原播放设置' : '开始语音跟读，原声静音';
+  }
+}
+
+function practiceAdapter(kind) {
+  if (kind === 'podcast') return {
+    static: true,
+    time: podcastPlaybackTime,
+    getMuted: () => podcastAudio.muted,
+    getRate: () => podcastAudio.playbackRate,
+    isPlaying: () => !podcastAudio.paused,
+    setMuted: (value) => { podcastAudio.muted = value; },
+    setRate: (rate) => { podcastAudio.playbackRate = rate; },
+    seek: (time) => {
+      podcastAudio.currentTime = Math.max(0, Math.min(podcastDurationValue() || Infinity, time + podcast.offset + podcastOutputLatency()));
+      updatePodcastTimes();
+      drawPodcastWave();
+    },
+    pause: () => podcastAudio.pause(),
+    play: () => podcastAudio.play(),
+  };
+  const player = detail.player;
+  return {
+    time: () => Number(player.getCurrentTime?.()) || 0,
+    getMuted: () => Boolean(player.isMuted?.()),
+    getRate: () => Number(player.getPlaybackRate?.()) || 1,
+    isPlaying: () => player.getPlayerState?.() === 1,
+    setMuted: (value) => value ? player.mute?.() : player.unMute?.(),
+    setRate: (rate) => {
+      const available = player.getAvailablePlaybackRates?.() || [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+      const closest = available.reduce((best, value) => Math.abs(value - rate) < Math.abs(best - rate) ? value : best, available[0] || 1);
+      player.setPlaybackRate?.(closest);
+    },
+    seek: (time) => player.seekTo?.(time, true),
+    pause: () => player.pauseVideo?.(),
+    play: () => player.playVideo?.(),
+  };
+}
+
+function renderPractice(reading) {
+  if (practice !== reading) return;
+  const view = practicePanels[reading.kind];
+  const position = reading.position;
+  const states = { starting: '开启麦克风…', listening: reading.mismatch ? '等待语音对齐' : position.matchedWords ? '跟读中' : '等待朗读', paused: '麦克风已暂停', reconnecting: '重新连接…', error: reading.error || '识别已中断' };
+  view.status.textContent = position.done ? '本段已读完' : states[reading.speech.state] || '等待朗读';
+  view.status.title = view.status.textContent;
+  view.root.classList.toggle('has-error', reading.speech.state === 'error');
+  view.root.classList.toggle('is-speaking', reading.speaking && reading.speech.requested);
+  view.stats.textContent = `${Math.round(position.progress * 100)}%${position.pace && !window.matchMedia('(max-width: 600px)').matches ? ` · ${position.pace}词/分` : ''}`;
+  view.stats.title = `已匹配 ${position.matchedWords} 词`;
+  view.next.textContent = position.done ? '完成' : position.nextWord;
+  view.next.title = position.nextWord;
+  view.transcript.textContent = position.transcript || '…';
+  view.transcript.title = position.transcript;
+  view.progress.value = position.progress;
+  const label = position.done ? '重读当前句' : reading.speech.requested ? '暂停麦克风' : '继续跟读';
+  view.listen.title = label;
+  view.listen.setAttribute('aria-label', label);
+  view.listen.innerHTML = icon(reading.speech.requested ? 'pause' : 'mic', 17);
+  view.skip.disabled = position.cueIndex >= reading.tracker.cues.length - 1;
+  const words = reading.kind === 'detail' ? detailWordEls : podcastWordEls;
+  for (const key of reading.tracker.matched) {
+    if (reading.painted.has(key)) continue;
+    const [cueIndex, wordIndex] = key.split(':').map(Number);
+    words[cueIndex]?.[wordIndex]?.classList.add('shadow-spoken');
+    reading.painted.add(key);
+  }
+  reading.nextNode?.classList.remove('shadow-next');
+  reading.nextNode = words[position.nextCueIndex]?.[position.nextWordIndex];
+  reading.nextNode?.classList.add('shadow-next');
+  scrollPracticeWord(reading);
+}
+
+function scrollPracticeWord(reading) {
+  const { cueIndex, wordIndex, nextWordIndex } = reading.position;
+  const video = reading.kind === 'detail';
+  const words = video ? detailWordEls : podcastWordEls;
+  const chars = video ? detailCharEls : podcastCharEls;
+  const activeChars = video ? detail.activeChars : podcast.activeChars;
+  const targets = [
+    [video ? detailEn : podcastEn, words[cueIndex]?.[wordIndex >= 0 ? wordIndex : nextWordIndex]],
+    [video ? detailZh : podcastZh, chars[cueIndex]?.[activeChars - 1]],
+  ];
+  for (const [container, element] of targets) {
+    if (!element || container.clientHeight <= 0) continue;
+    const bounds = container.getBoundingClientRect();
+    const rect = element.getBoundingClientRect();
+    if (rect.top < bounds.top + 12 || rect.bottom > bounds.bottom - 14) {
+      const top = rect.top - bounds.top + container.scrollTop;
+      container.scrollTo({ top: Math.max(0, top - container.clientHeight * 0.4), behavior: 'auto' });
+    }
+  }
+}
+
+function syncPractice(reading) {
+  if (practice !== reading) return;
+  if (reading.kind === 'detail') syncDetail();
+  else { syncPodcast(); updatePodcastPlayButton(); updatePodcastTimes(); drawPodcastWave(); }
+  renderPractice(reading);
+}
+
+function refreshPractice(kind) {
+  updatePracticeControls();
+  const reading = practiceFor(kind);
+  if (!reading) return;
+  reading.painted.clear();
+  reading.nextNode = null;
+  renderPractice(reading);
+}
+
+function startPractice(kind) {
+  if (practiceFor(kind)) { stopPractice(); return; }
+  if (document.getElementById(`${kind}-shadowing`).disabled) return;
+  stopPractice({ resume: false });
+  const cues = kind === 'detail' ? detail.cues : podcast.cues;
+  const tracker = new ShadowingTracker(cues);
+  if (!tracker.tokens.length) { toast('没有可跟读的英文字幕', 'err'); return; }
+  const time = kind === 'detail' ? Number(detail.player.getCurrentTime?.()) || 0 : podcastPlaybackTime();
+  let cueIndex = findCueIndex(cues, time);
+  if (cueIndex < 0) cueIndex = Math.max(0, cues.findIndex((cue) => cue.end > time));
+  const wordIndex = Math.max(0, findWordIndex(tracker.cues[cueIndex].words, time));
+  const reading = { kind, tracker, position: tracker.seek(cueIndex, wordIndex), painted: new Set(), speaking: false, error: '' };
+  reading.follower = new SilentMediaFollower(practiceAdapter(kind));
+  if (!speechSession) speechSession = new SpeechSession();
+  reading.speech = speechSession;
+  Object.assign(reading.speech, {
+    onResult: (alternatives, options) => {
+      if (practice !== reading) return;
+      const previousTranscript = reading.position.transcript;
+      reading.position = tracker.consume(alternatives, options);
+      reading.mismatch = Boolean(reading.position.transcript && reading.position.transcript !== previousTranscript && !reading.position.advanced && !reading.position.done);
+      if (reading.position.advanced) reading.follower.follow(reading.position.time);
+      syncPractice(reading);
+      if (reading.position.done) reading.speech.pause();
+    },
+    onSpeech: (speaking) => {
+      if (practice !== reading) return;
+      reading.speaking = speaking;
+      if (!speaking) reading.follower.hold();
+      renderPractice(reading);
+    },
+    onState: (state, details) => {
+      if (practice !== reading) return;
+      reading.error = details.message || '';
+      if (details.fatal) {
+        stopPractice({ resume: false });
+        toast(details.message, 'err', 5000);
+        return;
+      }
+      if (state === 'listening') reading.follower.lastInput = performance.now();
+      else reading.follower.hold();
+      syncPractice(reading);
+    },
+  });
+  practice = reading;
+  reading.follower.begin();
+  reading.follower.jump(reading.position.time);
+  const pane = kind === 'detail' ? videoDetail : podcastPane;
+  pane.classList.add('shadowing-active');
+  practicePanels[kind].root.classList.remove('hidden');
+  if (kind === 'detail') {
+    stopDetailTicker();
+    detailPlayerMount.inert = true;
+    detail.cues = tracker.cues;
+    renderDetailSubtitles();
+  } else {
+    stopPodcastTicker();
+    podcast.cues = tracker.cues;
+    for (const id of ['podcast-speed', 'podcast-follow', 'podcast-offset', 'podcast-offset-reset']) document.getElementById(id).disabled = true;
+    renderPodcastSubtitles();
+  }
+  updatePracticeControls();
+  syncPractice(reading);
+  reading.speech.start();
+}
+
+function stopPractice({ resume = true } = {}) {
+  const reading = practice;
+  if (!reading) return;
+  practice = null;
+  reading.speech.pause();
+  reading.speech.onResult = () => {};
+  reading.speech.onState = () => {};
+  reading.speech.onSpeech = () => {};
+  reading.follower.restore({ resume });
+  const pane = reading.kind === 'detail' ? videoDetail : podcastPane;
+  pane.classList.remove('shadowing-active');
+  pane.querySelectorAll('.shadow-spoken, .shadow-next').forEach((word) => word.classList.remove('shadow-spoken', 'shadow-next'));
+  practicePanels[reading.kind].root.classList.add('hidden');
+  if (reading.kind === 'detail') { detailPlayerMount.inert = false; syncDetail(); }
+  else {
+    for (const id of ['podcast-speed', 'podcast-follow', 'podcast-offset', 'podcast-offset-reset']) document.getElementById(id).disabled = false;
+    updatePodcastPlayButton();
+    syncPodcast();
+  }
+  updatePracticeControls();
+  if (resume) document.getElementById(`${reading.kind}-shadowing`).focus({ preventScroll: true });
+}
+
+function seekPracticeCue(cueIndex, wordIndex = 0) {
+  if (!practice) return;
+  const reading = practice;
+  const index = Math.max(0, Math.min(reading.tracker.cues.length - 1, cueIndex));
+  const listening = reading.speech.requested;
+  reading.speech.pause();
+  reading.position = reading.tracker.seek(index, wordIndex);
+  reading.mismatch = false;
+  const pane = reading.kind === 'detail' ? videoDetail : podcastPane;
+  pane.querySelectorAll('.shadow-spoken, .shadow-next').forEach((word) => word.classList.remove('shadow-spoken', 'shadow-next'));
+  reading.painted.clear();
+  reading.follower.jump(reading.position.time);
+  syncPractice(reading);
+  if (listening) reading.speech.start();
+}
+
+function togglePracticeListening() {
+  if (!practice) return;
+  const reading = practice;
+  if (reading.position.done) seekPracticeCue(reading.position.cueIndex);
+  if (reading.speech.requested) reading.speech.pause();
+  else reading.speech.start();
+}
+
+for (const kind of ['detail', 'podcast']) document.getElementById(`${kind}-shadowing`).addEventListener('click', () => startPractice(kind));
+updatePracticeControls();
 
 function setQueryInUrl(query) {
   const url = new URL(window.location.href);
@@ -606,6 +875,7 @@ function downloadPodcastSubtitles() {
 }
 
 async function openPodcastEpisode(channel, episode) {
+  stopPractice({ resume: false });
   podcast.selectedChannel = channel.id;
   podcast.selectedEpisode = episode;
   podcast.translateSeq += 1;
@@ -614,6 +884,7 @@ async function openPodcastEpisode(channel, episode) {
   setPodcastInfo(channel, episode);
   if (compactViewport.matches) setTreeCollapsed(true);
   podcast.cues = [];
+  updatePracticeControls();
   podcast.activeCue = -1;
   podcast.activeWord = -1;
   podcast.activeChars = -1;
@@ -650,7 +921,7 @@ async function openPodcastEpisode(channel, episode) {
 }
 
 function podcastScrollToCue(index) {
-  if (index < 0 || !podcast.follow) return;
+  if (index < 0 || (!podcast.follow && !practiceFor('podcast'))) return;
   const pair = podcastCueEls[index];
   if (!pair) return;
   for (const [container, element] of [[podcastEn, pair.en], [podcastZh, pair.zh]]) {
@@ -659,7 +930,7 @@ function podcastScrollToCue(index) {
     const elementRect = element.getBoundingClientRect();
     const top = elementRect.top - containerRect.top + container.scrollTop;
     if (top < container.scrollTop + 8 || top + elementRect.height > container.scrollTop + container.clientHeight - 8) {
-      container.scrollTo({ top: Math.max(0, top - container.clientHeight * 0.3), behavior: 'smooth' });
+      container.scrollTo({ top: Math.max(0, top - container.clientHeight * 0.3), behavior: practiceFor('podcast') ? 'auto' : 'smooth' });
     }
   }
 }
@@ -705,13 +976,14 @@ function podcastPlaybackTime() {
 
 function syncPodcast() {
   if (!podcast.cues.length) return;
-  const time = podcastPlaybackTime();
-  const index = findCueIndex(podcast.cues, time);
+  const position = practiceFor('podcast')?.position;
+  const time = position?.time ?? podcastPlaybackTime();
+  const index = position?.cueIndex ?? findCueIndex(podcast.cues, time);
   if (index !== podcast.activeCue) setPodcastActiveCue(index);
   if (index < 0) return;
   const cue = podcast.cues[index];
   const words = cue.words?.length ? cue.words : [];
-  const wordIndex = findWordIndex(words, time);
+  const wordIndex = position?.wordIndex ?? findWordIndex(words, time);
   if (wordIndex !== podcast.activeWord) {
     if (podcast.activeWord >= 0) podcastWordEls[index]?.[podcast.activeWord]?.classList.remove('active');
     podcast.activeWord = wordIndex;
@@ -719,7 +991,7 @@ function syncPodcast() {
   }
   const chars = podcastCharEls[index];
   if (chars?.length) {
-    const count = activeCharCount(cue.zh, cueProgress(cue, time));
+    const count = activeCharCount(cue.zh, position && words.length ? (wordIndex + 1) / words.length : cueProgress(cue, time));
     if (count !== podcast.activeChars) {
       podcast.activeChars = count;
       chars.forEach((char, charIndex) => char.classList.toggle('active', charIndex < count));
@@ -762,7 +1034,7 @@ function renderPodcastSubtitles() {
     const wordNodes = [];
     const words = cue.words?.length ? cue.words : [];
     words.forEach((word, wordIndex) => {
-      const node = h('span', { class: 'word' }, word.text);
+      const node = h('span', { class: 'word', onclick: (event) => { event.stopPropagation(); playPodcastCue(index, wordIndex); } }, word.text);
       wordNodes.push(node);
       enLine.append(node);
       if (wordIndex < words.length - 1) enLine.append(document.createTextNode(' '));
@@ -797,6 +1069,7 @@ function renderPodcastSubtitles() {
   });
   alignPodcastSubtitleRows();
   syncPodcast();
+  refreshPractice('podcast');
 }
 
 async function translatePodcast() {
@@ -881,6 +1154,7 @@ podcastAudio.addEventListener('ratechange', syncPodcast);
 podcastAudio.addEventListener('loadedmetadata', updatePodcastTimes);
 podcastAudio.addEventListener('durationchange', updatePodcastTimes);
 podcastAudio.addEventListener('play', () => {
+  if (practiceFor('podcast')) { podcastAudio.muted = true; podcastAudio.pause(); return; }
   updatePodcastPlayButton();
   startPodcastTicker();
   startPodcastVisual();
@@ -926,9 +1200,12 @@ function updatePodcastTimes() {
 }
 
 function updatePodcastPlayButton() {
-  podcastPlay.innerHTML = icon(podcastAudio.paused ? 'play' : 'pause', 18);
-  podcastPlay.setAttribute('aria-label', podcastAudio.paused ? '播放' : '暂停');
-  podcastPlay.title = podcastAudio.paused ? '播放' : '暂停';
+  const reading = practiceFor('podcast');
+  const paused = reading ? !reading.speech.requested : podcastAudio.paused;
+  const label = reading ? paused ? '继续跟读' : '暂停麦克风' : paused ? '播放' : '暂停';
+  podcastPlay.innerHTML = icon(paused ? 'play' : 'pause', 18);
+  podcastPlay.setAttribute('aria-label', label);
+  podcastPlay.title = label;
   podcastPane.classList.toggle('is-playing', !podcastAudio.paused);
   podcastAudioState.textContent = !podcast.selectedEpisode ? '尚未选择单集'
     : podcastAudio.ended ? '播放结束'
@@ -1092,6 +1369,7 @@ podcastMotion.addEventListener('change', () => {
 });
 
 async function togglePodcastPlay() {
+  if (practiceFor('podcast')) { togglePracticeListening(); return; }
   if (!podcastAudio.src) return;
   if (podcastAudio.paused) {
     try {
@@ -1117,10 +1395,11 @@ function setPodcastOffset(value) {
   syncPodcast();
 }
 
-function playPodcastCue(index) {
+function playPodcastCue(index, wordIndex = 0) {
   const cue = podcast.cues[index];
   if (!cue) return;
-  podcastAudio.currentTime = Math.max(0, cue.start + podcast.offset + podcastOutputLatency());
+  if (practiceFor('podcast')) { seekPracticeCue(index, wordIndex); return; }
+  podcastAudio.currentTime = Math.max(0, (cue.words[wordIndex]?.start ?? cue.start) + podcast.offset + podcastOutputLatency());
   updatePodcastTimes();
   syncPodcast();
   if (podcastAudio.paused) togglePodcastPlay();
@@ -1128,6 +1407,7 @@ function playPodcastCue(index) {
 
 function navigatePodcastCue(direction) {
   if (!podcast.cues.length) return;
+  if (practiceFor('podcast')) { seekPracticeCue(Math.max(0, podcast.activeCue) + direction); return; }
   const time = podcastPlaybackTime();
   const index = direction > 0
     ? podcast.cues.findIndex((cue) => cue.start > time + 0.05)
@@ -1155,6 +1435,12 @@ document.getElementById('podcast-offset-reset').addEventListener('click', () => 
 function seekPodcastRatio(ratio) {
   const duration = podcastDurationValue();
   if (!duration) return;
+  if (practiceFor('podcast')) {
+    const time = Math.max(0, ratio * duration - podcast.offset - podcastOutputLatency());
+    const index = Math.max(0, podcast.cues.findLastIndex((cue) => cue.start <= time));
+    seekPracticeCue(index, Math.max(0, findWordIndex(podcast.cues[index].words, time)));
+    return;
+  }
   podcastAudio.currentTime = Math.min(duration, Math.max(0, ratio * duration));
   updatePodcastTimes();
   drawPodcastWave();
@@ -1183,16 +1469,10 @@ podcastWave.addEventListener('keydown', (event) => {
   if (!duration) return;
   if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
     event.preventDefault();
-    podcastAudio.currentTime = Math.min(duration, Math.max(0, podcastAudio.currentTime + (event.key === 'ArrowRight' ? 5 : -5)));
-    updatePodcastTimes();
-    drawPodcastWave();
-    syncPodcast();
+    seekPodcastRatio((podcastAudio.currentTime + (event.key === 'ArrowRight' ? 5 : -5)) / duration);
   } else if (event.key === 'Home' || event.key === 'End') {
     event.preventDefault();
-    podcastAudio.currentTime = event.key === 'Home' ? 0 : duration;
-    updatePodcastTimes();
-    drawPodcastWave();
-    syncPodcast();
+    seekPodcastRatio(event.key === 'Home' ? 0 : 1);
   }
 });
 if ('ResizeObserver' in window) {
@@ -1239,10 +1519,12 @@ function detailFallbackShow(message) {
 }
 
 function destroyDetailPlayer() {
+  if (practiceFor('detail')) stopPractice({ resume: false });
   stopDetailTicker();
   try { detail.player?.destroy?.(); } catch { /* ignore */ }
   detail.player = null;
   detail.playerReady = false;
+  updatePracticeControls();
   detailPlayerMount.replaceChildren();
 }
 
@@ -1262,6 +1544,7 @@ function mountDetailPlayer(item) {
       events: {
         onReady: (event) => {
           detail.playerReady = true;
+          updatePracticeControls();
           detailFallback.classList.add('hidden');
           try {
             event.target.setOption?.('captions', 'track', {});
@@ -1270,6 +1553,13 @@ function mountDetailPlayer(item) {
           } catch { /* native CC */ }
         },
         onStateChange: (event) => {
+          const reading = practiceFor('detail');
+          if (reading) {
+            event.target.mute?.();
+            if (event.data === 1 && !reading.follower.following) event.target.pauseVideo?.();
+            syncDetail();
+            return;
+          }
           if (event.data === 1) startDetailTicker();
           else if (event.data === 2 || event.data === 0) {
             stopDetailTicker();
@@ -1277,6 +1567,9 @@ function mountDetailPlayer(item) {
           }
         },
         onError: (event) => {
+          if (practiceFor('detail')) stopPractice({ resume: false });
+          detail.playerReady = false;
+          updatePracticeControls();
           const blocked = event?.data === 101 || event?.data === 150;
           detailFallbackShow(blocked ? '上传者不允许嵌入播放' : '播放器没有加载成功');
         },
@@ -1286,6 +1579,7 @@ function mountDetailPlayer(item) {
 }
 
 function openVideoDetail(item) {
+  stopPractice({ resume: false });
   state.detailOpen = true;
   detail.item = item;
   detail.requestSeq += 1;
@@ -1365,7 +1659,7 @@ function detailScrollToCue(index) {
     const elementRect = element.getBoundingClientRect();
     const top = elementRect.top - containerRect.top + container.scrollTop;
     if (top < container.scrollTop + 6 || top + elementRect.height > container.scrollTop + container.clientHeight - 6) {
-      container.scrollTo({ top: Math.max(0, top - container.clientHeight * 0.3), behavior: 'smooth' });
+      container.scrollTo({ top: Math.max(0, top - container.clientHeight * 0.3), behavior: practiceFor('detail') ? 'auto' : 'smooth' });
     }
   }
 }
@@ -1396,13 +1690,14 @@ function setDetailActiveCue(index) {
 
 function syncDetail() {
   if (!detail.cues.length || !detail.playerReady) return;
-  const time = Number(detail.player?.getCurrentTime?.()) || 0;
-  const index = findCueIndex(detail.cues, time);
+  const position = practiceFor('detail')?.position;
+  const time = position?.time ?? (Number(detail.player?.getCurrentTime?.()) || 0);
+  const index = position?.cueIndex ?? findCueIndex(detail.cues, time);
   if (index !== detail.activeCue) setDetailActiveCue(index);
   if (index < 0) return;
   const cue = detail.cues[index];
   const words = cue.words || [];
-  const wordIndex = findWordIndex(words, time);
+  const wordIndex = position?.wordIndex ?? findWordIndex(words, time);
   if (wordIndex !== detail.activeWord) {
     if (detail.activeWord >= 0) detailWordEls[index]?.[detail.activeWord]?.classList.remove('active');
     detail.activeWord = wordIndex;
@@ -1410,7 +1705,7 @@ function syncDetail() {
   }
   const chars = detailCharEls[index];
   if (chars?.length) {
-    const count = activeCharCount(cue.zh, cueProgress(cue, time));
+    const count = activeCharCount(cue.zh, position && words.length ? (wordIndex + 1) / words.length : cueProgress(cue, time));
     if (count !== detail.activeChars) {
       detail.activeChars = count;
       chars.forEach((char, charIndex) => char.classList.toggle('active', charIndex < count));
@@ -1436,11 +1731,12 @@ function stopDetailTicker() {
   detail.ticker = null;
 }
 
-function seekDetail(cue) {
+function seekDetail(cue, wordIndex = 0) {
   const index = detail.cues.indexOf(cue);
+  if (practiceFor('detail')) { seekPracticeCue(index, wordIndex); return; }
   if (index >= 0) setDetailActiveCue(index);
   if (detail.playerReady && detail.player?.seekTo) {
-    detail.player.seekTo(cue.start, true);
+    detail.player.seekTo(cue.words[wordIndex]?.start ?? cue.start, true);
     detail.player.playVideo?.();
   }
 }
@@ -1461,13 +1757,14 @@ function renderDetailSubtitles() {
     const enLine = h('span', { class: 'detail-en' });
     const wordNodes = [];
     for (const [wordIndex, word] of (cue.words || []).entries()) {
-      const node = h('span', { class: 'word' }, word.text);
+      const node = h('span', { class: 'word', onclick: (event) => { event.stopPropagation(); seekDetail(cue, wordIndex); } }, word.text);
       wordNodes.push(node);
       enLine.append(node);
       if (wordIndex < cue.words.length - 1) enLine.append(document.createTextNode(' '));
     }
     if (!wordNodes.length) enLine.textContent = cue.en;
     enRow.append(enLine);
+    if (cue.zh) enRow.append(h('span', { class: 'detail-inline-zh', lang: 'zh-CN' }, cue.zh));
 
     const zhRow = h('button', { class: 'detail-cue', type: 'button', onclick: () => seekDetail(cue) },
       h('span', { class: 'detail-time' }, formatTimestamp(cue.start)));
@@ -1490,6 +1787,7 @@ function renderDetailSubtitles() {
     detailZh.append(zhRow);
   });
   syncDetail();
+  refreshPractice('detail');
 }
 
 async function translateDetail() {
@@ -2105,6 +2403,7 @@ function updateRailSelection() {
 }
 
 function setView(view) {
+  if (view !== 'videos') stopPractice({ resume: false });
   state.view = view;
   const videos = view === 'videos';
   const configuring = view === 'settings';
@@ -2127,6 +2426,7 @@ function setView(view) {
 }
 
 function setTab(tab) {
+  if (tab !== state.tab) stopPractice({ resume: false });
   if (state.tab === 'podcast' && tab !== 'podcast') podcastAudio.pause();
   if (state.tab === 'youtube' && tab !== 'youtube' && state.detailOpen) closeVideoDetail({ restore: false });
   if (state.tab === 'books' && tab !== 'books' && bookState.readerOpen) closeBookReader({ restore: false });
@@ -2179,6 +2479,14 @@ document.addEventListener('keydown', (event) => {
   }
 });
 compactViewport.addEventListener('change', (event) => setTreeCollapsed(event.matches));
+if ('ResizeObserver' in window) {
+  const practiceResize = new ResizeObserver(() => { if (practice) scrollPracticeWord(practice); });
+  practiceResize.observe(detailEn);
+  practiceResize.observe(podcastEn);
+}
+window.addEventListener('pagehide', () => stopPractice({ resume: false }));
+document.addEventListener('visibilitychange', () => { if (document.hidden && practice) practice.speech.pause(); });
+podcastAudio.addEventListener('volumechange', () => { if (practiceFor('podcast') && !podcastAudio.muted) podcastAudio.muted = true; });
 
 try { state.treeCollapsed = localStorage.getItem(TREE_KEY) === '1'; } catch { /* ignore */ }
 setTreeCollapsed(compactViewport.matches || state.treeCollapsed);

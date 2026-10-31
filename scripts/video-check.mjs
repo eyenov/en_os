@@ -143,6 +143,11 @@ const CUES = (() => {
   });
 })();
 
+const DETAIL_CUES = Array.from({ length: 3 }, (_, cycle) => CUES.map((cue) => ({
+  ...cue, start: cue.start + cycle * 14.4, end: cue.end + cycle * 14.4,
+  words: cue.words.map((word) => ({ ...word, start: word.start + cycle * 14.4, end: word.end + cycle * 14.4 })),
+}))).flat();
+
 const PODCAST_CUES = Array.from({ length: 12 }, (_, index) => {
   const source = CUES[index % CUES.length];
   const start = index * 4 + 0.5;
@@ -297,16 +302,33 @@ async function main() {
     await cdp.screenshot('video-results.png', true);
 
     console.log('3a. compact in-pane video detail');
+    const shadowingChecks = {};
     await cdp.evaluate(`(() => {
       const originalFetch = window.fetch;
       window.fetch = (resource, options) => {
         if (resource !== '/api/youtube/captions') return originalFetch.call(window, resource, options);
         window.fetch = originalFetch;
-        return Promise.resolve(new Response(JSON.stringify({ cues: ${JSON.stringify(CUES)} }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        return Promise.resolve(new Response(JSON.stringify({ cues: ${JSON.stringify(DETAIL_CUES)} }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      };
+      window.__SPEECH_INSTANCES__ = [];
+      window.SpeechRecognition = class {
+        constructor() { this.results = []; window.__SPEECH_INSTANCES__.push(this); }
+        start() { this.running = true; this.onstart?.(); if (window.__SPEECH_FAILURE__) { const error = window.__SPEECH_FAILURE__; window.__SPEECH_FAILURE__ = null; this.onerror?.({ error }); } }
+        abort() { this.running = false; this.aborted = true; this.onend?.(); }
+        emit(text, final = false) {
+          const index = this.results.length && !this.results.at(-1).isFinal ? this.results.length - 1 : this.results.length;
+          this.results[index] = Object.assign([{ transcript: text }], { isFinal: final });
+          this.onspeechstart?.();
+          this.onresult?.({ resultIndex: index, results: this.results });
+        }
       };
       window.YT = { Player: class {
         constructor(mount, options) {
           this.time = 0;
+          this.muted = false;
+          this.rate = 1;
+          this.playing = false;
+          window.__VIDEO_PLAYER__ = this;
           this.events = options.events;
           mount.style.cssText = 'width:100%;height:100%';
           const image = document.createElement('img');
@@ -317,14 +339,22 @@ async function main() {
           queueMicrotask(() => this.events.onReady({ target: this }));
         }
         getCurrentTime() { return this.time; }
+        getPlayerState() { return this.playing ? 1 : 2; }
+        isMuted() { return this.muted; }
+        mute() { this.muted = true; }
+        unMute() { this.muted = false; }
+        getPlaybackRate() { return this.rate; }
+        getAvailablePlaybackRates() { return [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2]; }
+        setPlaybackRate(rate) { this.rate = rate; }
         seekTo(time) { this.time = time; }
-        playVideo() { this.events.onStateChange({ data: 1 }); }
+        playVideo() { this.playing = true; this.events.onStateChange({ data: 1, target: this }); }
+        pauseVideo() { this.playing = false; this.events.onStateChange({ data: 2, target: this }); }
         destroy() {}
       } };
       localStorage.removeItem('enos.detail.left.v1');
       document.querySelector('#video-results .preview-title').click();
     })()`);
-    await cdp.waitFor(`!document.getElementById('video-detail').classList.contains('hidden') && document.querySelectorAll('#detail-en .detail-cue').length === ${CUES.length}`);
+    await cdp.waitFor(`!document.getElementById('video-detail').classList.contains('hidden') && document.querySelectorAll('#detail-en .detail-cue').length === ${DETAIL_CUES.length}`);
     await cdp.waitFor(`document.querySelector('#detail-player img')?.naturalWidth > 0`);
     const detailChecks = await cdp.evaluate(`(() => {
       const bounds = (selector) => document.querySelector(selector).getBoundingClientRect();
@@ -371,6 +401,60 @@ async function main() {
     await cdp.evaluate(`document.querySelectorAll('#detail-en .detail-cue')[1].click()`);
     await cdp.waitFor(`document.querySelectorAll('#detail-en .detail-cue')[1].classList.contains('active') && document.querySelectorAll('#detail-en .word.active').length > 0`);
     detailChecks.subtitleSeeking = await cdp.evaluate(`document.querySelectorAll('#detail-zh .detail-cue')[1].classList.contains('active') && document.querySelectorAll('#detail-en .word.active').length > 0`);
+
+    console.log('3b. speech-driven video practice');
+    await cdp.evaluate(`(() => {
+      window.__VIDEO_PLAYER__.pauseVideo();
+      window.__VIDEO_PLAYER__.seekTo(0);
+      window.__VIDEO_PLAYER__.setPlaybackRate(1.25);
+      document.getElementById('detail-shadowing').click();
+    })()`);
+    await cdp.waitFor(`document.getElementById('video-detail').classList.contains('shadowing-active') && window.__SPEECH_INSTANCES__.at(-1).running`);
+    shadowingChecks.videoStartsSilent = await cdp.evaluate(`window.__VIDEO_PLAYER__.muted && !window.__VIDEO_PLAYER__.playing && document.getElementById('detail-player').inert && !document.getElementById('detail-shadowing-bar').classList.contains('hidden')`);
+    await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).emit('banana clouds')`);
+    shadowingChecks.unrelatedVoiceDoesNotAdvance = await cdp.evaluate(`document.querySelector('#detail-shadowing-bar progress').value === 0 && !document.querySelector('#detail-en .word.active')`);
+    await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).emit('Cities')`);
+    await cdp.waitFor(`window.__VIDEO_PLAYER__.time > 0.1 && !window.__VIDEO_PLAYER__.playing`);
+    shadowingChecks.videoVoiceHighlights = await cdp.evaluate(`document.querySelector('#detail-en .word.active')?.textContent === 'Cities' && document.querySelector('#detail-en .word.shadow-next')?.textContent === 'should'`);
+    shadowingChecks.videoWaitsForVoice = await cdp.evaluate(`(async () => {
+      const time = window.__VIDEO_PLAYER__.time;
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      return window.__VIDEO_PLAYER__.time === time && !window.__VIDEO_PLAYER__.playing;
+    })()`);
+    await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).emit('Cities should'); window.__SLOW_RATE__ = window.__VIDEO_PLAYER__.rate`);
+    await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).emit('Cities should abandon the idea')`);
+    shadowingChecks.videoAdaptsSpeechSpeed = await cdp.evaluate(`window.__VIDEO_PLAYER__.rate > window.__SLOW_RATE__ && window.__VIDEO_PLAYER__.muted && document.querySelector('#detail-en .word.active')?.textContent === 'idea'`);
+    await cdp.evaluate(`(() => {
+      window.__STALE_SPEECH__ = window.__SPEECH_INSTANCES__.at(-1).onresult;
+      window.__SPEECH_PROGRESS__ = document.querySelector('#detail-shadowing-bar progress').value;
+      document.querySelector('#detail-shadowing-bar .shadowing-commands button:nth-child(3)').click();
+      window.__STALE_SPEECH__({ resultIndex: 0, results: [Object.assign([{ transcript: 'Cities should abandon the idea of building wider roads' }], { isFinal: true })] });
+    })()`);
+    shadowingChecks.videoPauseStopsMicrophone = await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).aborted && !window.__VIDEO_PLAYER__.playing && document.querySelector('#detail-shadowing-bar progress').value === window.__SPEECH_PROGRESS__`);
+    await cdp.evaluate(`document.querySelector('#detail-shadowing-bar .shadowing-commands button:nth-child(3)').click()`);
+    await cdp.evaluate(`document.querySelectorAll('#detail-en .detail-cue')[2].querySelectorAll('.word')[1].click()`);
+    shadowingChecks.videoWordSeekRestartsListening = await cdp.evaluate(`document.querySelector('#detail-en .word.shadow-next')?.textContent === 'street' && window.__SPEECH_INSTANCES__.at(-1).running && window.__SPEECH_INSTANCES__.at(-2).aborted && !window.__VIDEO_PLAYER__.playing`);
+    await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).emit(${JSON.stringify(DETAIL_CUES[2].en.split(' ').slice(1).join(' '))}, true)`);
+    await cdp.evaluate(`(() => { for (const cue of ${JSON.stringify(DETAIL_CUES.slice(3, 11))}) window.__SPEECH_INSTANCES__.at(-1).emit(cue.en, true); })()`);
+    await cdp.waitFor(`(() => { const word = document.querySelector('#detail-en .word.active'); if (!word) return false; const rect = word.getBoundingClientRect(); const bounds = document.getElementById('detail-en').getBoundingClientRect(); return rect.top >= bounds.top && rect.bottom <= bounds.bottom + 1; })()`);
+    shadowingChecks.videoVoiceScrollsSubtitles = await cdp.evaluate(`document.querySelectorAll('#detail-en .detail-cue')[10].classList.contains('active') && document.getElementById('detail-en').scrollTop > 0`);
+    shadowingChecks.videoPracticeLayout = await cdp.evaluate(`(() => {
+      const bar = document.getElementById('detail-shadowing-bar');
+      const player = document.querySelector('.detail-player-shell').getBoundingClientRect();
+      const subtitles = document.querySelector('.detail-sub-columns').getBoundingClientRect();
+      return document.documentElement.scrollWidth <= innerWidth + 1 && bar.scrollWidth <= bar.clientWidth + 1
+        && (${MOBILE} ? player.bottom <= subtitles.top && subtitles.height > 150 && subtitles.bottom <= innerHeight + 1 && getComputedStyle(document.getElementById('detail-agent')).display === 'none' : Math.abs(player.top - subtitles.top) <= 1);
+    })()`);
+    await cdp.screenshot(MOBILE ? 'video-shadowing-mobile.png' : 'video-shadowing.png');
+    if (MOBILE) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', { ...VIEWPORT, width: 320, height: 568, screenWidth: 320, screenHeight: 568 });
+      await cdp.waitFor(`(() => { const word = document.querySelector('#detail-en .word.active'); if (!word) return false; const rect = word.getBoundingClientRect(); const bounds = document.getElementById('detail-en').getBoundingClientRect(); return rect.top >= bounds.top && rect.bottom <= bounds.bottom + 1; })()`);
+      shadowingChecks.smallVideoPracticeFits = await cdp.evaluate(`document.documentElement.scrollWidth <= innerWidth + 1 && document.getElementById('detail-shadowing-bar').scrollWidth <= document.getElementById('detail-shadowing-bar').clientWidth + 1 && document.querySelector('.detail-sub-columns').getBoundingClientRect().bottom <= innerHeight + 1`);
+      await cdp.screenshot('video-shadowing-320.png');
+      await cdp.send('Emulation.setDeviceMetricsOverride', VIEWPORT);
+    } else shadowingChecks.smallVideoPracticeFits = true;
+    await cdp.evaluate(`document.getElementById('detail-shadowing').click()`);
+    shadowingChecks.videoExitRestoresSettings = await cdp.evaluate(`!window.__VIDEO_PLAYER__.muted && window.__VIDEO_PLAYER__.rate === 1.25 && !document.getElementById('detail-player').inert && !document.getElementById('video-detail').classList.contains('shadowing-active') && window.__SPEECH_INSTANCES__.at(-1).aborted && document.activeElement === document.getElementById('detail-shadowing')`);
     await cdp.evaluate(`document.getElementById('detail-back').click()`);
     detailChecks.returnsToList = await cdp.evaluate(`document.getElementById('video-detail').classList.contains('hidden') && !document.getElementById('youtube-pane').classList.contains('hidden')`);
     console.log('  detail', JSON.stringify(detailChecks));
@@ -423,7 +507,7 @@ async function main() {
       }
     })()`);
     await cdp.evaluate(`document.getElementById('podcast-play').click()`);
-    await cdp.waitFor(`document.getElementById('podcast-audio').currentTime > 0.55 && !document.getElementById('podcast-audio').paused`);
+    await cdp.waitFor(`document.getElementById('podcast-audio').currentTime > 0.55 && !document.getElementById('podcast-audio').paused && window.__VIDEOS_DEBUG__.podcastState.activeCue === 0`);
     const playing = await cdp.evaluate(`!document.getElementById('podcast-audio').paused && window.__VIDEOS_DEBUG__.podcastState.activeCue === 0`);
     const waveformAnimated = await cdp.evaluate(`(async () => {
       const canvas = document.getElementById('podcast-wave');
@@ -543,6 +627,62 @@ async function main() {
     await cdp.screenshot(MOBILE ? 'podcast-mobile.png' : 'podcast.png');
     await cdp.evaluate(`document.getElementById('podcast-offset-reset').click()`);
 
+    console.log('4b. speech-driven podcast practice');
+    await cdp.evaluate(`(() => {
+      const audio = document.getElementById('podcast-audio');
+      audio.pause(); audio.currentTime = 0.5; audio.muted = false;
+      const speed = document.getElementById('podcast-speed'); speed.value = '1.25'; speed.dispatchEvent(new Event('change'));
+      document.getElementById('podcast-shadowing').click();
+    })()`);
+    await cdp.waitFor(`document.getElementById('podcast-pane').classList.contains('shadowing-active') && window.__SPEECH_INSTANCES__.at(-1).running`);
+    shadowingChecks.podcastStartsSilent = await cdp.evaluate(`document.getElementById('podcast-audio').muted && document.getElementById('podcast-audio').paused && document.getElementById('podcast-speed').disabled`);
+    await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).emit('Cities should abandon')`);
+    shadowingChecks.podcastVoiceHighlights = await cdp.evaluate(`document.querySelector('#podcast-en .word.active')?.textContent === 'abandon' && document.getElementById('podcast-audio').currentTime > 1 && document.getElementById('podcast-audio').paused`);
+    shadowingChecks.podcastWaitsForVoice = await cdp.evaluate(`(async () => {
+      const audio = document.getElementById('podcast-audio'); const time = audio.currentTime;
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      return audio.currentTime === time && audio.paused;
+    })()`);
+    await cdp.evaluate(`document.getElementById('podcast-audio').muted = false`);
+    await cdp.waitFor(`document.getElementById('podcast-audio').muted`);
+    shadowingChecks.podcastCannotLeakOriginalAudio = await cdp.evaluate(`document.getElementById('podcast-audio').paused && document.getElementById('podcast-audio').muted`);
+    await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).onerror({ error: 'network' })`);
+    shadowingChecks.networkErrorHoldsProgress = await cdp.evaluate(`document.getElementById('podcast-shadowing-bar').classList.contains('has-error') && document.getElementById('podcast-audio').muted && document.getElementById('podcast-audio').paused && window.__SPEECH_INSTANCES__.at(-1).aborted`);
+    await cdp.evaluate(`document.querySelector('#podcast-shadowing-bar .shadowing-commands button:nth-child(3)').click()`);
+    shadowingChecks.networkResumePreservesPosition = await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).running && document.querySelector('#podcast-en .word.active')?.textContent === 'abandon' && !document.getElementById('podcast-shadowing-bar').classList.contains('has-error')`);
+    await cdp.evaluate(`window.__RECONNECT_OLD__ = window.__SPEECH_INSTANCES__.at(-1); window.__RECONNECT_OLD__.running = false; window.__RECONNECT_OLD__.onend()`);
+    await cdp.waitFor(`window.__SPEECH_INSTANCES__.at(-1) !== window.__RECONNECT_OLD__ && window.__SPEECH_INSTANCES__.at(-1).running`);
+    shadowingChecks.automaticReconnectKeepsPosition = await cdp.evaluate(`document.querySelector('#podcast-en .word.active')?.textContent === 'abandon' && document.getElementById('podcast-audio').paused && document.getElementById('podcast-audio').muted`);
+    await cdp.evaluate(`document.querySelector('#podcast-shadowing-bar .shadowing-commands button:nth-child(3)').click(); document.querySelector('#podcast-shadowing-bar .shadowing-commands button:nth-child(2)').click()`);
+    shadowingChecks.podcastSkipWhilePaused = await cdp.evaluate(`window.__VIDEOS_DEBUG__.podcastState.activeCue === 1 && !window.__SPEECH_INSTANCES__.at(-1).running && document.getElementById('podcast-audio').paused`);
+    await cdp.evaluate(`document.querySelector('#podcast-shadowing-bar .shadowing-commands button:nth-child(3)').click()`);
+    await cdp.evaluate(`(() => { for (const cue of ${JSON.stringify(PODCAST_CUES.slice(1, 11))}) window.__SPEECH_INSTANCES__.at(-1).emit(cue.en, true); })()`);
+    await cdp.waitFor(`(() => { const word = document.querySelector('#podcast-en .word.active'); if (!word) return false; const rect = word.getBoundingClientRect(); const bounds = document.getElementById('podcast-en').getBoundingClientRect(); return rect.top >= bounds.top && rect.bottom <= bounds.bottom + 1; })()`);
+    shadowingChecks.podcastVoiceScrollsDespiteFollowOff = await cdp.evaluate(`window.__VIDEOS_DEBUG__.podcastState.activeCue === 10 && window.__VIDEOS_DEBUG__.podcastState.follow === false && document.getElementById('podcast-en').scrollTop > 0`);
+    shadowingChecks.podcastPracticeFits = await cdp.evaluate(`document.documentElement.scrollWidth <= innerWidth + 1 && document.getElementById('podcast-shadowing-bar').scrollWidth <= document.getElementById('podcast-shadowing-bar').clientWidth + 1`);
+    await cdp.screenshot(MOBILE ? 'podcast-shadowing-mobile.png' : 'podcast-shadowing.png');
+    await cdp.evaluate(`document.querySelector('#podcast-shadowing-bar .shadowing-commands button:first-child').click()`);
+    shadowingChecks.repeatStartsCurrentSentence = await cdp.evaluate(`window.__VIDEOS_DEBUG__.podcastState.activeCue === 10 && window.__VIDEOS_DEBUG__.podcastState.activeWord === -1 && document.querySelector('#podcast-shadowing-bar progress').value === 0`);
+    await cdp.evaluate(`(() => { for (const cue of ${JSON.stringify(PODCAST_CUES.slice(10))}) window.__SPEECH_INSTANCES__.at(-1).emit(cue.en, true); })()`);
+    shadowingChecks.completionClosesMicrophone = await cdp.evaluate(`document.querySelector('#podcast-shadowing-bar progress').value === 1 && window.__SPEECH_INSTANCES__.at(-1).aborted && document.getElementById('podcast-audio').paused && document.getElementById('podcast-audio').muted`);
+    await cdp.evaluate(`document.getElementById('podcast-shadowing').click()`);
+    shadowingChecks.podcastExitRestoresSettings = await cdp.evaluate(`!document.getElementById('podcast-audio').muted && document.getElementById('podcast-audio').playbackRate === 1.25 && !document.getElementById('podcast-speed').disabled && window.__SPEECH_INSTANCES__.at(-1).aborted`);
+    await cdp.evaluate(`(() => {
+      document.getElementById('podcast-shadowing').click();
+      window.__DELAYED_CLOSE__ = window.__SPEECH_INSTANCES__.at(-1);
+      window.__INSTANCE_COUNT__ = window.__SPEECH_INSTANCES__.length;
+      window.__DELAYED_CLOSE__.abort = function () { this.running = false; this.aborted = true; };
+      document.getElementById('podcast-shadowing').click();
+      document.getElementById('podcast-shadowing').click();
+    })()`);
+    shadowingChecks.quickRestartWaitsForMicrophone = await cdp.evaluate(`window.__SPEECH_INSTANCES__.length === window.__INSTANCE_COUNT__ && document.getElementById('podcast-audio').muted && document.getElementById('podcast-audio').paused`);
+    await cdp.evaluate(`window.__DELAYED_CLOSE__.onend()`);
+    await cdp.waitFor(`window.__SPEECH_INSTANCES__.length > window.__INSTANCE_COUNT__ && window.__SPEECH_INSTANCES__.at(-1).running`);
+    await cdp.evaluate(`document.getElementById('podcast-shadowing').click()`);
+    await cdp.evaluate(`window.__SPEECH_FAILURE__ = 'not-allowed'; document.getElementById('podcast-shadowing').click()`);
+    shadowingChecks.permissionDenialRestoresMedia = await cdp.evaluate(`!document.getElementById('podcast-pane').classList.contains('shadowing-active') && !document.getElementById('podcast-audio').muted && window.__SPEECH_INSTANCES__.at(-1).aborted`);
+    await cdp.evaluate(`document.getElementById('podcast-shadowing').click()`);
+
     console.log('5. book list fixture');
     await cdp.evaluate(`(() => {
       const originalFetch = window.fetch;
@@ -563,6 +703,7 @@ async function main() {
       document.getElementById('tab-books').click();
     })()`);
     await cdp.waitFor(`document.querySelectorAll('#books-grid .book-card').length === 2`);
+    shadowingChecks.switchingMediaStopsMicrophone = await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).aborted && !document.getElementById('podcast-audio').muted && !document.getElementById('podcast-pane').classList.contains('shadowing-active')`);
     await cdp.waitFor(`document.getElementById('books-grid').getAnimations().every((animation) => animation.playState === 'finished')`);
     const booksChecks = await cdp.evaluate(`(() => {
       const pane = document.getElementById('books-pane');
@@ -614,9 +755,11 @@ async function main() {
       ok: Object.entries(podcastChecks).every(([key, value]) => key === 'title' || value === true)
         && Object.values(booksChecks).every((value) => value === true)
         && Object.values(detailChecks).every((value) => value === true)
+        && Object.values(shadowingChecks).every((value) => value === true)
         && Object.values(workspaceChecks).every((value) => value === true),
       workspace: workspaceChecks,
       detail: detailChecks,
+      shadowing: shadowingChecks,
       podcast: podcastChecks,
       books: booksChecks,
       consoleErrors: cdp.logs,
