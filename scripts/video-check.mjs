@@ -311,6 +311,17 @@ async function main() {
         return Promise.resolve(new Response(JSON.stringify({ cues: ${JSON.stringify(DETAIL_CUES)} }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
       };
       window.__SPEECH_INSTANCES__ = [];
+      window.__PRONUNCIATION_EXAMPLES__ = [];
+      Object.defineProperty(window, 'SpeechSynthesisUtterance', { configurable: true, value: class {
+        constructor(text) { this.text = text; }
+      } });
+      Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: {
+        speaking: false,
+        getVoices() { return [{ lang: 'en-US', name: 'Fixture English' }]; },
+        speak(utterance) { this.speaking = true; window.__PRONUNCIATION_EXAMPLES__.push(utterance); },
+        cancel() { this.speaking = false; },
+        finish() { this.speaking = false; window.__PRONUNCIATION_EXAMPLES__.at(-1).onend?.(); },
+      } });
       window.SpeechRecognition = class {
         constructor() { this.results = []; window.__SPEECH_INSTANCES__.push(this); }
         start() { this.running = true; this.onstart?.(); if (window.__SPEECH_FAILURE__) { const error = window.__SPEECH_FAILURE__; window.__SPEECH_FAILURE__ = null; this.onerror?.({ error }); } }
@@ -411,6 +422,16 @@ async function main() {
     })()`);
     await cdp.waitFor(`document.getElementById('video-detail').classList.contains('shadowing-active') && window.__SPEECH_INSTANCES__.at(-1).running`);
     shadowingChecks.videoStartsSilent = await cdp.evaluate(`window.__VIDEO_PLAYER__.muted && !window.__VIDEO_PLAYER__.playing && document.getElementById('detail-player').inert && !document.getElementById('detail-shadowing-bar').classList.contains('hidden')`);
+    await cdp.waitFor(`document.querySelector('#detail-shadowing-bar .shadowing-ipa').textContent.includes('/')`);
+    shadowingChecks.videoNextWordHasIpa = await cdp.evaluate(`document.querySelector('#detail-en .word.shadow-next').dataset.ipa.includes('/') && !document.querySelector('#detail-shadowing-bar .shadowing-pronounce').disabled`);
+    shadowingChecks.pronunciationButtonStaysNearWord = await cdp.evaluate(`(() => {
+      const prompt = document.querySelector('#detail-shadowing-bar .shadowing-prompt');
+      const textRight = (element) => { const range = document.createRange(); range.selectNodeContents(element); return range.getBoundingClientRect().right; };
+      const right = Math.max(textRight(prompt.querySelector('strong')), textRight(prompt.querySelector('.shadowing-ipa')));
+      const left = prompt.querySelector('button').getBoundingClientRect().left;
+      const labelGap = prompt.querySelector('strong').getBoundingClientRect().left - textRight(prompt.querySelector('small'));
+      return left >= right && left - right <= 10 && labelGap >= 0 && labelGap <= 10;
+    })()`);
     await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).emit('banana clouds')`);
     shadowingChecks.unrelatedVoiceDoesNotAdvance = await cdp.evaluate(`document.querySelector('#detail-shadowing-bar progress').value === 0 && !document.querySelector('#detail-en .word.active')`);
     await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).emit('Cities')`);
@@ -421,8 +442,35 @@ async function main() {
       await new Promise((resolve) => setTimeout(resolve, 180));
       return window.__VIDEO_PLAYER__.time === time && !window.__VIDEO_PLAYER__.playing;
     })()`);
-    await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).emit('Cities should'); window.__SLOW_RATE__ = window.__VIDEO_PLAYER__.rate`);
-    await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).emit('Cities should abandon the idea')`);
+    await cdp.waitFor(`document.querySelector('#detail-en .word.shadow-next').dataset.ipa.includes('/')`);
+    await cdp.evaluate(`(() => {
+      window.__EXAMPLE_PROGRESS__ = document.querySelector('#detail-shadowing-bar progress').value;
+      window.__EXAMPLE_TIME__ = window.__VIDEO_PLAYER__.time;
+      document.querySelector('#detail-shadowing-bar .shadowing-pronounce').click();
+    })()`);
+    await cdp.waitFor(`window.speechSynthesis.speaking`);
+    shadowingChecks.videoExamplePausesRecognition = await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).aborted && window.__PRONUNCIATION_EXAMPLES__.at(-1).text === 'should' && window.__PRONUNCIATION_EXAMPLES__.at(-1).lang === 'en-US' && window.__VIDEO_PLAYER__.muted && !window.__VIDEO_PLAYER__.playing && window.__VIDEO_PLAYER__.time === window.__EXAMPLE_TIME__ && document.querySelector('#detail-shadowing-bar progress').value === window.__EXAMPLE_PROGRESS__`);
+    await cdp.evaluate(`window.speechSynthesis.finish()`);
+    await cdp.waitFor(`window.__SPEECH_INSTANCES__.at(-1).running`);
+    shadowingChecks.videoExampleResumesWithoutScoring = await cdp.evaluate(`document.querySelector('#detail-shadowing-bar progress').value === window.__EXAMPLE_PROGRESS__ && document.querySelector('#detail-en .shadowing-review').dataset.count === '1'`);
+    await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).emit('should abandon idea', true)`);
+    shadowingChecks.liveReviewNamesSkippedWord = await cdp.evaluate(`document.querySelector('#detail-en .shadowing-review-advice').textContent.includes('the') && document.querySelectorAll('#detail-en .detail-cue')[0].querySelectorAll('.word')[3].classList.contains('shadow-missed') && !document.querySelectorAll('#detail-en .detail-cue')[0].querySelectorAll('.word')[5].classList.contains('shadow-missed')`);
+    await cdp.evaluate(`document.querySelector('#detail-shadowing-bar .shadowing-commands button:first-child').click(); window.__SPEECH_INSTANCES__.at(-1).emit('Cities')`);
+    shadowingChecks.videoRepeatKeepsEachReview = await cdp.evaluate(`document.querySelector('#detail-en .shadowing-review').dataset.count === '2' && document.querySelectorAll('#detail-en .shadowing-review-record').length === 2 && document.querySelector('#detail-en .shadowing-review-meta').textContent.includes('2')`);
+    await cdp.evaluate(`window.__HISTORY_PROGRESS__ = document.querySelector('#detail-shadowing-bar progress').value; document.querySelector('#detail-en .shadowing-review-history summary').click()`);
+    shadowingChecks.historyDoesNotSeek = await cdp.evaluate(`document.querySelector('#detail-en .shadowing-review-history').open && document.querySelector('#detail-shadowing-bar progress').value === window.__HISTORY_PROGRESS__`);
+    await cdp.evaluate(`document.querySelector('#detail-en .shadowing-review-history summary').click()`);
+    await cdp.evaluate(`(() => {
+      const realNow = performance.now.bind(performance);
+      let time = realNow() + 1500;
+      performance.now = () => time;
+      try {
+        window.__SPEECH_INSTANCES__.at(-1).emit('Cities should');
+        window.__SLOW_RATE__ = window.__VIDEO_PLAYER__.rate;
+        time += 180;
+        window.__SPEECH_INSTANCES__.at(-1).emit('Cities should abandon the idea');
+      } finally { performance.now = realNow; }
+    })()`);
     shadowingChecks.videoAdaptsSpeechSpeed = await cdp.evaluate(`window.__VIDEO_PLAYER__.rate > window.__SLOW_RATE__ && window.__VIDEO_PLAYER__.muted && document.querySelector('#detail-en .word.active')?.textContent === 'idea'`);
     await cdp.evaluate(`(() => {
       window.__STALE_SPEECH__ = window.__SPEECH_INSTANCES__.at(-1).onresult;
@@ -431,6 +479,11 @@ async function main() {
       window.__STALE_SPEECH__({ resultIndex: 0, results: [Object.assign([{ transcript: 'Cities should abandon the idea of building wider roads' }], { isFinal: true })] });
     })()`);
     shadowingChecks.videoPauseStopsMicrophone = await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).aborted && !window.__VIDEO_PLAYER__.playing && document.querySelector('#detail-shadowing-bar progress').value === window.__SPEECH_PROGRESS__`);
+    await cdp.evaluate(`window.__PAUSED_EXAMPLE_INSTANCES__ = window.__SPEECH_INSTANCES__.length; document.querySelector('#detail-shadowing-bar .shadowing-pronounce').click()`);
+    await cdp.waitFor(`window.speechSynthesis.speaking`);
+    await cdp.evaluate(`window.speechSynthesis.finish()`);
+    await cdp.waitFor(`!document.querySelector('#detail-shadowing-bar .shadowing-pronounce').classList.contains('is-playing')`);
+    shadowingChecks.examplePreservesPausedMicrophone = await cdp.evaluate(`window.__SPEECH_INSTANCES__.length === window.__PAUSED_EXAMPLE_INSTANCES__ && !window.__SPEECH_INSTANCES__.at(-1).running && document.querySelector('#detail-shadowing-bar progress').value === window.__SPEECH_PROGRESS__`);
     await cdp.evaluate(`document.querySelector('#detail-shadowing-bar .shadowing-commands button:nth-child(3)').click()`);
     await cdp.evaluate(`document.querySelectorAll('#detail-en .detail-cue')[2].querySelectorAll('.word')[1].click()`);
     shadowingChecks.videoWordSeekRestartsListening = await cdp.evaluate(`document.querySelector('#detail-en .word.shadow-next')?.textContent === 'street' && window.__SPEECH_INSTANCES__.at(-1).running && window.__SPEECH_INSTANCES__.at(-2).aborted && !window.__VIDEO_PLAYER__.playing`);
@@ -445,6 +498,14 @@ async function main() {
       return document.documentElement.scrollWidth <= innerWidth + 1 && bar.scrollWidth <= bar.clientWidth + 1
         && (${MOBILE} ? player.bottom <= subtitles.top && subtitles.height > 150 && subtitles.bottom <= innerHeight + 1 && getComputedStyle(document.getElementById('detail-agent')).display === 'none' : Math.abs(player.top - subtitles.top) <= 1);
     })()`);
+    shadowingChecks.videoChineseBelowAndReviewRight = await cdp.evaluate(`(() => {
+      const row = document.querySelector('#detail-en .detail-cue.active');
+      const english = row.querySelector('.detail-en');
+      const chinese = row.querySelector('.detail-inline-zh');
+      const content = row.querySelector('.subtitle-cue-main').getBoundingClientRect();
+      const review = row.querySelector('.shadowing-review').getBoundingClientRect();
+      return getComputedStyle(chinese).display !== 'none' && chinese.getBoundingClientRect().top >= english.getBoundingClientRect().bottom - 1 && parseFloat(getComputedStyle(chinese).fontSize) < parseFloat(getComputedStyle(english).fontSize) && review.left >= content.right + 5 && row.querySelector('.shadowing-review').dataset.status === 'complete' && getComputedStyle(document.getElementById('detail-zh').parentElement).display === 'none';
+    })()`);
     await cdp.screenshot(MOBILE ? 'video-shadowing-mobile.png' : 'video-shadowing.png');
     if (MOBILE) {
       await cdp.send('Emulation.setDeviceMetricsOverride', { ...VIEWPORT, width: 320, height: 568, screenWidth: 320, screenHeight: 568 });
@@ -453,8 +514,17 @@ async function main() {
       await cdp.screenshot('video-shadowing-320.png');
       await cdp.send('Emulation.setDeviceMetricsOverride', VIEWPORT);
     } else shadowingChecks.smallVideoPracticeFits = true;
+    await cdp.evaluate(`document.querySelector('#detail-shadowing-bar .shadowing-pronounce').click()`);
+    await cdp.waitFor(`window.speechSynthesis.speaking`);
+    await cdp.evaluate(`window.__LATE_EXAMPLE_END__ = window.__PRONUNCIATION_EXAMPLES__.at(-1).onend`);
     await cdp.evaluate(`document.getElementById('detail-shadowing').click()`);
     shadowingChecks.videoExitRestoresSettings = await cdp.evaluate(`!window.__VIDEO_PLAYER__.muted && window.__VIDEO_PLAYER__.rate === 1.25 && !document.getElementById('detail-player').inert && !document.getElementById('video-detail').classList.contains('shadowing-active') && window.__SPEECH_INSTANCES__.at(-1).aborted && document.activeElement === document.getElementById('detail-shadowing')`);
+    await cdp.evaluate(`window.__LATE_EXAMPLE_END__()`);
+    shadowingChecks.exitCancelsExampleWithoutRestart = await cdp.evaluate(`!window.speechSynthesis.speaking && !window.__SPEECH_INSTANCES__.at(-1).running`);
+    await cdp.evaluate(`window.__VIDEO_PLAYER__.seekTo(0); document.getElementById('detail-shadowing').click()`);
+    await cdp.waitFor(`window.__SPEECH_INSTANCES__.at(-1).running`);
+    shadowingChecks.videoReentryRestoresReviews = await cdp.evaluate(`document.querySelector('#detail-en .shadowing-review').dataset.count === '2' && document.querySelectorAll('#detail-en .shadowing-review-record').length >= 2 && JSON.parse(localStorage.getItem('enos.shadowing.reviews.v1')).every(entry => entry.records.every(record => !('transcript' in record)))`);
+    await cdp.evaluate(`document.getElementById('detail-shadowing').click()`);
     await cdp.evaluate(`document.getElementById('detail-back').click()`);
     detailChecks.returnsToList = await cdp.evaluate(`document.getElementById('video-detail').classList.contains('hidden') && !document.getElementById('youtube-pane').classList.contains('hidden')`);
     console.log('  detail', JSON.stringify(detailChecks));
@@ -638,6 +708,18 @@ async function main() {
     shadowingChecks.podcastStartsSilent = await cdp.evaluate(`document.getElementById('podcast-audio').muted && document.getElementById('podcast-audio').paused && document.getElementById('podcast-speed').disabled`);
     await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).emit('Cities should abandon')`);
     shadowingChecks.podcastVoiceHighlights = await cdp.evaluate(`document.querySelector('#podcast-en .word.active')?.textContent === 'abandon' && document.getElementById('podcast-audio').currentTime > 1 && document.getElementById('podcast-audio').paused`);
+    await cdp.waitFor(`document.querySelector('#podcast-en .word.shadow-next').dataset.ipa.includes('/')`);
+    shadowingChecks.podcastNextWordHasIpa = await cdp.evaluate(`document.querySelector('#podcast-shadowing-bar .shadowing-ipa').textContent.includes('/') && !document.querySelector('#podcast-shadowing-bar .shadowing-pronounce').disabled`);
+    await cdp.evaluate(`(() => {
+      window.__PODCAST_EXAMPLE_TIME__ = document.getElementById('podcast-audio').currentTime;
+      window.__PODCAST_EXAMPLE_PROGRESS__ = document.querySelector('#podcast-shadowing-bar progress').value;
+      document.querySelector('#podcast-shadowing-bar .shadowing-pronounce').click();
+    })()`);
+    await cdp.waitFor(`window.speechSynthesis.speaking`);
+    shadowingChecks.podcastExampleKeepsOriginalSilent = await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).aborted && document.getElementById('podcast-audio').paused && document.getElementById('podcast-audio').muted && document.getElementById('podcast-audio').currentTime === window.__PODCAST_EXAMPLE_TIME__ && window.__PRONUNCIATION_EXAMPLES__.at(-1).text === 'the'`);
+    await cdp.evaluate(`window.speechSynthesis.finish()`);
+    await cdp.waitFor(`window.__SPEECH_INSTANCES__.at(-1).running`);
+    shadowingChecks.podcastExampleResumesWithoutScoring = await cdp.evaluate(`document.querySelector('#podcast-shadowing-bar progress').value === window.__PODCAST_EXAMPLE_PROGRESS__ && document.querySelector('#podcast-en .shadowing-review').dataset.count === '1'`);
     shadowingChecks.podcastWaitsForVoice = await cdp.evaluate(`(async () => {
       const audio = document.getElementById('podcast-audio'); const time = audio.currentTime;
       await new Promise((resolve) => setTimeout(resolve, 180));
@@ -660,11 +742,20 @@ async function main() {
     await cdp.waitFor(`(() => { const word = document.querySelector('#podcast-en .word.active'); if (!word) return false; const rect = word.getBoundingClientRect(); const bounds = document.getElementById('podcast-en').getBoundingClientRect(); return rect.top >= bounds.top && rect.bottom <= bounds.bottom + 1; })()`);
     shadowingChecks.podcastVoiceScrollsDespiteFollowOff = await cdp.evaluate(`window.__VIDEOS_DEBUG__.podcastState.activeCue === 10 && window.__VIDEOS_DEBUG__.podcastState.follow === false && document.getElementById('podcast-en').scrollTop > 0`);
     shadowingChecks.podcastPracticeFits = await cdp.evaluate(`document.documentElement.scrollWidth <= innerWidth + 1 && document.getElementById('podcast-shadowing-bar').scrollWidth <= document.getElementById('podcast-shadowing-bar').clientWidth + 1`);
+    shadowingChecks.podcastChineseBelowAndReviewRight = await cdp.evaluate(`(() => {
+      const row = document.querySelector('#podcast-en .podcast-cue.active');
+      const english = row.querySelector('.podcast-en');
+      const chinese = row.querySelector('.podcast-inline-zh');
+      const content = row.querySelector('.subtitle-cue-main').getBoundingClientRect();
+      const review = row.querySelector('.shadowing-review').getBoundingClientRect();
+      return getComputedStyle(chinese).display !== 'none' && chinese.getBoundingClientRect().top >= english.getBoundingClientRect().bottom - 1 && parseFloat(getComputedStyle(chinese).fontSize) < parseFloat(getComputedStyle(english).fontSize) && review.left >= content.right + 5 && getComputedStyle(document.getElementById('podcast-zh').parentElement).display === 'none';
+    })()`);
     await cdp.screenshot(MOBILE ? 'podcast-shadowing-mobile.png' : 'podcast-shadowing.png');
     await cdp.evaluate(`document.querySelector('#podcast-shadowing-bar .shadowing-commands button:first-child').click()`);
     shadowingChecks.repeatStartsCurrentSentence = await cdp.evaluate(`window.__VIDEOS_DEBUG__.podcastState.activeCue === 10 && window.__VIDEOS_DEBUG__.podcastState.activeWord === -1 && document.querySelector('#podcast-shadowing-bar progress').value === 0`);
     await cdp.evaluate(`(() => { for (const cue of ${JSON.stringify(PODCAST_CUES.slice(10))}) window.__SPEECH_INSTANCES__.at(-1).emit(cue.en, true); })()`);
     shadowingChecks.completionClosesMicrophone = await cdp.evaluate(`document.querySelector('#podcast-shadowing-bar progress').value === 1 && window.__SPEECH_INSTANCES__.at(-1).aborted && document.getElementById('podcast-audio').paused && document.getElementById('podcast-audio').muted`);
+    shadowingChecks.podcastRepeatKeepsEachReview = await cdp.evaluate(`document.querySelectorAll('#podcast-en .podcast-cue')[10].querySelector('.shadowing-review').dataset.count === '2' && document.querySelectorAll('#podcast-en .podcast-cue')[10].querySelectorAll('.shadowing-review-record').length === 2`);
     await cdp.evaluate(`document.getElementById('podcast-shadowing').click()`);
     shadowingChecks.podcastExitRestoresSettings = await cdp.evaluate(`!document.getElementById('podcast-audio').muted && document.getElementById('podcast-audio').playbackRate === 1.25 && !document.getElementById('podcast-speed').disabled && window.__SPEECH_INSTANCES__.at(-1).aborted`);
     await cdp.evaluate(`(() => {

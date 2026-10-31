@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ShadowingTracker, SilentMediaFollower, SpeechSession, speechTokens } from '../public/js/shadowing.js';
+import { describeShadowingAttempt, ShadowingReviewLog, ShadowingTracker, SilentMediaFollower, SpeechSession, speechTokens } from '../public/js/shadowing.js';
+import { clearAllData, getShadowingReviews, saveShadowingReviews } from '../public/js/store.js';
+import { PronunciationPlayer } from '../public/js/pronunciation.js';
 
 function cues(lines = ['Cities should plant more trees.', 'The shaded street is quiet.']) {
   return lines.map((en, cueIndex) => ({
@@ -89,6 +91,135 @@ test('empty captions are not mistaken for a completed practice', () => {
   assert.equal(tracker.consume('Hello').advanced, false);
 });
 
+test('sentence feedback names skipped words and gives a focused adjustment', () => {
+  const review = describeShadowingAttempt(cues()[0], { matched: [0, 2, 3, 4], status: 'complete' });
+  assert.equal(review.matchedWords, 4);
+  assert.equal(review.totalWords, 5);
+  assert.equal(review.coverage, 0.8);
+  assert.deepEqual(review.missingWords, ['should']);
+  assert.match(review.advice, /should/);
+});
+
+test('live feedback does not label upcoming unread words as omissions', () => {
+  const review = describeShadowingAttempt(cues()[0], { matched: [0, 1] });
+  assert.equal(review.status, 'active');
+  assert.deepEqual(review.missingWords, []);
+  assert.equal(review.coverage, 0.4);
+});
+
+test('sentence feedback respects a practice anchor inside the sentence', () => {
+  const review = describeShadowingAttempt(cues()[0], { startWordIndex: 2, matched: [2, 3, 4], status: 'complete' });
+  assert.equal(review.coverage, 1);
+  assert.equal(review.totalWords, 3);
+  assert.deepEqual(review.missingWords, []);
+  assert.ok(review.advice);
+  assert.notEqual(review.summary, describeShadowingAttempt(cues()[0], { matched: [0, 1, 2, 3, 4], status: 'complete' }).summary);
+});
+
+test('empty sentence feedback does not manufacture a successful score', () => {
+  const review = describeShadowingAttempt({ en: '', start: 0, end: 1 }, { status: 'complete' });
+  assert.equal(review.coverage, 0);
+  assert.equal(review.totalWords, 0);
+  assert.equal(review.advice, '');
+});
+
+test('sentence history keeps every repeat and ignores duplicate interim results', () => {
+  const tracker = new ShadowingTracker(cues());
+  const log = new ShadowingReviewLog(tracker.cues);
+  const position = tracker.consume('Cities plant more trees');
+  log.record(position, tracker.matched, 1000);
+  log.record(tracker.consume('Cities plant more trees'), tracker.matched, 1100);
+  assert.equal(log.reviews(0).length, 1);
+  assert.equal(log.reviews(0)[0].status, 'complete');
+  assert.deepEqual(log.reviews(0)[0].missingWords, ['should']);
+  tracker.seek(0);
+  log.begin(0);
+  log.record(tracker.consume('Cities should plant more trees'), tracker.matched, 2000);
+  assert.deepEqual(log.reviews(0).map((review) => review.number), [1, 2]);
+  assert.equal(log.reviews(0)[1].coverage, 1);
+});
+
+test('one recognition segment spanning sentences produces separate aligned reviews', () => {
+  const tracker = new ShadowingTracker(cues());
+  const log = new ShadowingReviewLog(tracker.cues);
+  log.record(tracker.consume('Cities should plant more trees the shaded street'), tracker.matched);
+  assert.equal(log.reviews(0)[0].status, 'complete');
+  assert.equal(log.reviews(0)[0].coverage, 1);
+  assert.equal(log.reviews(1)[0].status, 'active');
+  log.finish();
+  assert.equal(log.reviews(1)[0].status, 'stopped');
+  assert.deepEqual(log.reviews(1)[0].missingWords, ['is', 'quiet']);
+});
+
+test('sentence review history survives reentry but rejects changed captions', () => {
+  const tracker = new ShadowingTracker(cues());
+  const log = new ShadowingReviewLog(tracker.cues);
+  log.record(tracker.consume('Cities should'), tracker.matched, 1000);
+  const records = log.export();
+  const restored = new ShadowingReviewLog(tracker.cues, records);
+  assert.equal(restored.reviews(0)[0].status, 'stopped');
+  assert.equal(restored.reviews(0)[0].matchedWords, 2);
+  assert.equal(new ShadowingReviewLog(cues(['Another sentence']), records).reviews(0).length, 0);
+  assert.equal(records[0].transcript, undefined);
+});
+
+test('unrelated speech creates a retry suggestion without crediting a word', () => {
+  const tracker = new ShadowingTracker(cues());
+  const log = new ShadowingReviewLog(tracker.cues);
+  log.record(tracker.consume('banana'), tracker.matched);
+  assert.equal(log.reviews(0)[0].coverage, 0);
+  assert.match(log.reviews(0)[0].advice, /Cities/);
+});
+
+test('sentence reviews require all tokens of a contraction before crediting the source word', () => {
+  const tracker = new ShadowingTracker(cues(["We can't stop."]));
+  const log = new ShadowingReviewLog(tracker.cues);
+  log.record(tracker.consume('We can stop'), tracker.alignedWords);
+  assert.equal(log.reviews(0)[0].matchedWords, 2);
+  assert.deepEqual(log.reviews(0)[0].missingWords, ["can't"]);
+  log.record(tracker.consume('We can not stop'), tracker.alignedWords);
+  assert.equal(log.reviews(0)[0].coverage, 1);
+});
+
+test('partial spoken numbers do not earn a full word in sentence feedback', () => {
+  const tracker = new ShadowingTracker(cues(['Plant 24 trees.']));
+  const log = new ShadowingReviewLog(tracker.cues);
+  log.record(tracker.consume('Plant twenty trees'), tracker.alignedWords);
+  assert.deepEqual(log.reviews(0)[0].missingWords, ['24']);
+  const reset = tracker.seek(0);
+  log.begin(reset.cueIndex);
+  assert.equal(tracker.alignedWords.size, 0);
+  log.record(tracker.consume('Plant twenty four trees'), tracker.alignedWords);
+  assert.equal(log.reviews(0)[1].coverage, 1);
+});
+
+test('review storage keeps media separate and clears only application data', () => {
+  const originalStorage = globalThis.localStorage;
+  const originalWindow = globalThis.window;
+  const values = new Map([['unrelated.app', 'keep']]);
+  globalThis.localStorage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+    key: (index) => Array.from(values.keys())[index],
+    get length() { return values.size; },
+  };
+  globalThis.window = { dispatchEvent() {} };
+  try {
+    assert.equal(saveShadowingReviews('video:first', [{ number: 1 }]), true);
+    assert.equal(saveShadowingReviews('podcast:first', [{ number: 2 }]), true);
+    assert.deepEqual(getShadowingReviews('video:first'), [{ number: 1 }]);
+    assert.deepEqual(getShadowingReviews('podcast:first'), [{ number: 2 }]);
+    assert.equal(saveShadowingReviews('', []), false);
+    clearAllData();
+    assert.deepEqual(getShadowingReviews('video:first'), []);
+    assert.equal(values.get('unrelated.app'), 'keep');
+  } finally {
+    globalThis.localStorage = originalStorage;
+    globalThis.window = originalWindow;
+  }
+});
+
 function recognitionFixture() {
   const instances = [];
   class Recognition {
@@ -154,6 +285,79 @@ test('restarting waits for the previous microphone session to actually end', () 
   session.pause();
   fixture.instances[1].onend();
   assert.equal(timers.size, 0);
+});
+
+test('pronunciation can wait for confirmed microphone release before playing', async () => {
+  const fixture = recognitionFixture();
+  fixture.Recognition.prototype.abort = function () { this.aborted = true; };
+  const session = new SpeechSession({ Recognition: fixture.Recognition });
+  session.start();
+  session.pause();
+  let released = false;
+  const ready = session.whenReleased().then((value) => { released = value; });
+  await Promise.resolve();
+  assert.equal(released, false);
+  fixture.instances[0].onend();
+  await ready;
+  assert.equal(released, true);
+});
+
+test('pronunciation does not proceed after an unconfirmed microphone abort', async () => {
+  const fixture = recognitionFixture();
+  fixture.Recognition.prototype.abort = function () {};
+  let release;
+  const session = new SpeechSession({
+    Recognition: fixture.Recognition, setTimer: (callback) => { release = callback; return 1; }, clearTimer() {},
+  });
+  session.start();
+  session.pause();
+  const ready = session.whenReleased();
+  release();
+  assert.equal(await ready, false);
+  assert.equal(await session.whenReleased(), false);
+});
+
+function pronunciationFixture() {
+  const spoken = [];
+  const synthesis = {
+    getVoices: () => [{ lang: 'zh-CN' }, { lang: 'en-GB' }, { lang: 'en-US' }],
+    speak: (utterance) => spoken.push(utterance),
+    cancel() { this.cancelled = true; },
+  };
+  class Utterance { constructor(text) { this.text = text; } }
+  return { spoken, synthesis, Utterance };
+}
+
+test('pronunciation chooses an English voice and settles after the example ends', async () => {
+  const fixture = pronunciationFixture();
+  const player = new PronunciationPlayer(fixture);
+  const playing = player.play('should');
+  assert.equal(fixture.spoken[0].text, 'should');
+  assert.equal(fixture.spoken[0].lang, 'en-US');
+  assert.equal(fixture.spoken[0].rate, 0.85);
+  fixture.spoken[0].onend();
+  assert.equal(await playing, true);
+  assert.equal(player.current, null);
+});
+
+test('stopping a pronunciation example cancels speech and ignores late callbacks', async () => {
+  const fixture = pronunciationFixture();
+  const player = new PronunciationPlayer(fixture);
+  const playing = player.play('should');
+  const lateEnd = fixture.spoken[0].onend;
+  player.cancel();
+  lateEnd();
+  assert.equal(await playing, false);
+  assert.equal(fixture.synthesis.cancelled, true);
+  assert.equal(player.current, null);
+});
+
+test('unsupported or missing English synthesis fails without claiming to play', async () => {
+  await assert.rejects(new PronunciationPlayer({ synthesis: null, Utterance: null }).play('should'));
+  const fixture = pronunciationFixture();
+  fixture.synthesis.getVoices = () => [{ lang: 'zh-CN' }];
+  await assert.rejects(new PronunciationPlayer(fixture).play('should'), /English/);
+  assert.equal(fixture.spoken.length, 0);
 });
 
 test('permission denial is fatal and does not silently restart capture', () => {

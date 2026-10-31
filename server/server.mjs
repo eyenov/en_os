@@ -15,6 +15,7 @@ import {
 import { getVideoCaptions, searchYouTube, translateCues, translateCuesFree } from './youtube.mjs';
 import { getPodcastEpisode, listPodcastChannels, listPodcastEpisodes, openPodcastAudio } from './podcasts.mjs';
 import { listBooks, openBookFile, readBook } from './books.mjs';
+import { getPronunciation } from './pronunciation.mjs';
 
 const ROOT = path.dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -329,6 +330,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (urlPath.startsWith('/api/')) {
+      if (urlPath === '/api/pronunciation') {
+        if (req.method !== 'GET') throw new HttpError(405, '该接口只接受 GET。', 'METHOD_NOT_ALLOWED');
+        return sendJSON(res, 200, await getPronunciation(url.searchParams.get('word') || ''));
+      }
       if (urlPath === '/api/books') {
         if (req.method !== 'GET') throw new HttpError(405, '该接口只接受 GET。', 'METHOD_NOT_ALLOWED');
         const data = await listBooks();

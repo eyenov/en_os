@@ -8,13 +8,15 @@ import {
   getPodcastChannels,
   getPodcastEpisode,
   getPodcastEpisodes,
+  getWordPronunciation,
   readBook,
   searchVideos,
   translateVideoCaptions,
   translateVideoCaptionsFree,
 } from './api.js';
-import { getSettings } from './store.js';
-import { ShadowingTracker, SilentMediaFollower, SpeechSession } from './shadowing.js';
+import { getSettings, getShadowingReviews, saveShadowingReviews } from './store.js';
+import { ShadowingReviewLog, ShadowingTracker, SilentMediaFollower, SpeechSession } from './shadowing.js';
+import { PronunciationPlayer } from './pronunciation.js';
 import { activeCharCount, cueProgress, findCueIndex, findWordIndex, formatTimestamp, normalizeCues, serializeSrt } from './subtitle-sync.js';
 import { h, icon, toast } from './ui.js';
 import { renderSettings } from './views/settings.js';
@@ -39,6 +41,7 @@ const settingsView = document.getElementById('settings-view');
 let settingsReady = false;
 let practice = null;
 let speechSession = null;
+let pronunciationPlayer = null;
 const params = new URLSearchParams(window.location.search);
 if (window.location.hash.startsWith('#/')) {
   const legacyRoute = window.location.hash.slice(2).split('?')[0];
@@ -195,6 +198,7 @@ function createPracticePanel(kind) {
   const status = h('span', { class: 'shadowing-status-text', role: 'status' });
   const stats = h('span', { class: 'shadowing-stats' });
   const next = h('strong');
+  const ipa = h('span', { class: 'shadowing-ipa', lang: 'en' });
   const transcript = h('span', { class: 'shadowing-transcript' });
   const progress = h('progress', { max: 1, value: 0, 'aria-label': '跟读进度' });
   const command = (name, label, handler) => h('button', {
@@ -204,16 +208,150 @@ function createPracticePanel(kind) {
   const skip = command('arrowRight', '下一句', () => seekPracticeCue((practice?.position.cueIndex || 0) + 1));
   const listen = command('pause', '暂停麦克风', togglePracticeListening);
   const close = command('close', '结束跟读', () => stopPractice());
+  const pronounce = command('volume', '播放下一词发音', () => playPracticePronunciation(kind));
+  pronounce.classList.add('shadowing-pronounce');
   root.replaceChildren(
     h('div', { class: 'shadowing-top' },
       h('div', { class: 'shadowing-status' }, h('span', { class: 'shadowing-signal', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')), status),
       stats,
       h('div', { class: 'shadowing-commands' }, repeat, skip, listen, close),
     ),
-    h('div', { class: 'shadowing-bottom' }, h('span', { class: 'shadowing-prompt' }, h('small', {}, '下一词'), next), transcript),
+    h('div', { class: 'shadowing-bottom' }, h('div', { class: 'shadowing-prompt' }, h('small', {}, '下一词'), next, ipa, pronounce), transcript),
     progress,
   );
-  return { root, status, stats, next, transcript, progress, listen, skip };
+  return { root, status, stats, next, ipa, pronounce, transcript, progress, listen, skip, repeat };
+}
+
+function createPracticeReview(cueIndex) {
+  const meta = h('small', { class: 'shadowing-review-meta' });
+  const summary = h('strong', { class: 'shadowing-review-summary' }, '待跟读');
+  const advice = h('p', { class: 'shadowing-review-advice' });
+  const historyLabel = h('span');
+  const list = h('ol', { class: 'shadowing-review-list' });
+  const history = h('details', { class: 'shadowing-review-history' },
+    h('summary', { title: '查看每次跟读记录', 'aria-label': `查看第 ${cueIndex + 1} 句跟读记录` }, h('span', { html: icon('clock', 13) }), historyLabel), list);
+  const root = h('aside', {
+    class: 'shadowing-review is-empty', 'aria-label': `第 ${cueIndex + 1} 句跟读点评`, onclick: (event) => event.stopPropagation(),
+  }, meta, summary, advice, history);
+  return { root, meta, summary, advice, history, historyLabel, list };
+}
+
+function renderPracticeReviews(reading) {
+  const pairs = reading.kind === 'detail' ? detailCueEls : podcastCueEls;
+  const words = reading.kind === 'detail' ? detailWordEls : podcastWordEls;
+  for (const cueIndex of new Set([reading.position.cueIndex, ...reading.reviews.history.keys()])) {
+    const view = pairs[cueIndex]?.review;
+    if (!view) continue;
+    const reviews = reading.reviews.reviews(cueIndex);
+    const signature = JSON.stringify(reviews);
+    if (signature === view.signature) continue;
+    view.signature = signature;
+    view.root.dataset.count = String(reviews.length);
+    view.root.classList.toggle('is-empty', !reviews.length);
+    const latest = reviews.at(-1);
+    if (!latest) continue;
+    view.root.dataset.status = latest.status;
+    view.root.classList.toggle('needs-work', latest.missingWords.length > 0);
+    view.meta.replaceChildren(h('span', {}, `第 ${latest.number} 遍`), h('span', {}, `${Math.round(latest.coverage * 100)}% 对齐`));
+    view.summary.textContent = latest.summary;
+    view.advice.textContent = latest.advice;
+    view.historyLabel.textContent = `${reviews.length}次记录`;
+    view.list.replaceChildren(...[...reviews].reverse().map((review) => h('li', {
+      class: 'shadowing-review-record', dataset: { number: review.number, status: review.status },
+    }, h('small', {}, `第 ${review.number} 遍 · ${review.status === 'complete' ? '已读完' : review.status === 'active' ? '跟读中' : '已结束'}`),
+    h('strong', {}, review.summary), h('p', {}, review.advice))));
+    for (const word of words[cueIndex] || []) word.classList.remove('shadow-missed');
+    for (const wordIndex of latest.missingWordIndexes) words[cueIndex]?.[wordIndex]?.classList.add('shadow-missed');
+  }
+}
+
+function persistPracticeReviews(reading, delayed = false) {
+  clearTimeout(reading.saveTimer);
+  if (delayed) { reading.saveTimer = setTimeout(() => persistPracticeReviews(reading), 400); return; }
+  const records = reading.reviews.export();
+  if (!records.length) return;
+  if (!saveShadowingReviews(reading.mediaId, records) && !reading.storageWarning) {
+    reading.storageWarning = true;
+    toast('点评暂时只保留在当前页面，浏览器存储不可用。', 'err');
+  }
+}
+
+function cancelPracticePronunciation(reading, { resume = false } = {}) {
+  const shouldResume = reading.exampleResume;
+  reading.exampleRun += 1;
+  reading.exampleActive = false;
+  reading.exampleResume = false;
+  pronunciationPlayer?.cancel();
+  if (practice !== reading) return;
+  if (resume && shouldResume && !document.hidden && !reading.position.done) reading.speech.start();
+  renderPractice(reading);
+}
+
+async function playPracticePronunciation(kind) {
+  const reading = practiceFor(kind);
+  if (!reading || reading.position.done) return;
+  if (reading.exampleActive) { cancelPracticePronunciation(reading, { resume: true }); return; }
+  pronunciationPlayer ??= new PronunciationPlayer();
+  const word = reading.position.nextWord.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '');
+  if (!word || !pronunciationPlayer.supported) return;
+  const run = ++reading.exampleRun;
+  reading.exampleResume = reading.speech.requested;
+  reading.exampleActive = true;
+  reading.speech.pause();
+  reading.follower.hold();
+  renderPractice(reading);
+  try {
+    const released = await reading.speech.whenReleased();
+    if (practice !== reading || run !== reading.exampleRun) return;
+    if (!released) {
+      reading.exampleResume = false;
+      toast('麦克风未能释放，请结束跟读后重试。', 'err');
+      return;
+    }
+    await pronunciationPlayer.play(word);
+  } catch {
+    if (practice === reading && run === reading.exampleRun) toast('英语发音暂不可用，请检查浏览器或系统语音设置。', 'err');
+  } finally {
+    if (practice === reading && run === reading.exampleRun) {
+      const resume = reading.exampleResume;
+      reading.exampleActive = false;
+      reading.exampleResume = false;
+      renderPractice(reading);
+      if (resume && !document.hidden && !reading.position.done) reading.speech.start();
+    }
+  }
+}
+
+function updatePracticePronunciation(reading) {
+  const word = reading.position.nextWord;
+  const view = practicePanels[reading.kind];
+  if (reading.pronunciationWord !== word) {
+    reading.pronunciationWord = word;
+    reading.ipa = [];
+    reading.ipaLoading = Boolean(word);
+    if (word) getWordPronunciation(word).then((data) => {
+      if (practice !== reading || reading.pronunciationWord !== word) return;
+      reading.ipa = (Array.isArray(data.ipa) ? data.ipa : []).filter((value) => typeof value === 'string').slice(0, 4);
+      reading.ipaLoading = false;
+      renderPractice(reading);
+    }).catch(() => {
+      if (practice !== reading || reading.pronunciationWord !== word) return;
+      reading.ipaLoading = false;
+      renderPractice(reading);
+    });
+  }
+  view.ipa.textContent = !word ? '' : reading.ipaLoading ? '查音标…' : reading.ipa.length ? reading.ipa.join(' · ') : '音标暂缺';
+  view.ipa.title = reading.ipa.length ? `美式词典读音：${reading.ipa.join('，')}` : '词典未收录音标时仍可播放英语发音';
+  view.pronounce.disabled = !word || !window.SpeechSynthesisUtterance || !window.speechSynthesis;
+  const label = reading.exampleActive ? '停止发音示例' : `播放 ${word} 的发音示例`;
+  view.pronounce.title = label;
+  view.pronounce.setAttribute('aria-label', label);
+  view.pronounce.classList.toggle('is-playing', reading.exampleActive);
+  view.pronounce.innerHTML = icon(reading.exampleActive ? 'stop' : 'volume', 17);
+  if (reading.nextNode) {
+    reading.nextNode.dataset.ipa = reading.ipa[0] || '';
+    reading.nextNode.title = `${word}${reading.ipa.length ? ` ${reading.ipa.join('，')}` : ''}`;
+  }
 }
 
 function updatePracticeControls() {
@@ -268,7 +406,7 @@ function renderPractice(reading) {
   const view = practicePanels[reading.kind];
   const position = reading.position;
   const states = { starting: '开启麦克风…', listening: reading.mismatch ? '等待语音对齐' : position.matchedWords ? '跟读中' : '等待朗读', paused: '麦克风已暂停', reconnecting: '重新连接…', error: reading.error || '识别已中断' };
-  view.status.textContent = position.done ? '本段已读完' : states[reading.speech.state] || '等待朗读';
+  view.status.textContent = reading.exampleActive ? '示范发音 · 麦克风暂停' : position.done ? '本段已读完' : states[reading.speech.state] || '等待朗读';
   view.status.title = view.status.textContent;
   view.root.classList.toggle('has-error', reading.speech.state === 'error');
   view.root.classList.toggle('is-speaking', reading.speaking && reading.speech.requested);
@@ -283,7 +421,9 @@ function renderPractice(reading) {
   view.listen.title = label;
   view.listen.setAttribute('aria-label', label);
   view.listen.innerHTML = icon(reading.speech.requested ? 'pause' : 'mic', 17);
-  view.skip.disabled = position.cueIndex >= reading.tracker.cues.length - 1;
+  view.listen.disabled = reading.exampleActive;
+  view.repeat.disabled = reading.exampleActive;
+  view.skip.disabled = reading.exampleActive || position.cueIndex >= reading.tracker.cues.length - 1;
   const words = reading.kind === 'detail' ? detailWordEls : podcastWordEls;
   for (const key of reading.tracker.matched) {
     if (reading.painted.has(key)) continue;
@@ -291,9 +431,16 @@ function renderPractice(reading) {
     words[cueIndex]?.[wordIndex]?.classList.add('shadow-spoken');
     reading.painted.add(key);
   }
-  reading.nextNode?.classList.remove('shadow-next');
-  reading.nextNode = words[position.nextCueIndex]?.[position.nextWordIndex];
+  const nextNode = words[position.nextCueIndex]?.[position.nextWordIndex];
+  if (reading.nextNode !== nextNode) {
+    reading.nextNode?.classList.remove('shadow-next');
+    reading.nextNode?.removeAttribute('data-ipa');
+    reading.nextNode?.removeAttribute('title');
+    reading.nextNode = nextNode;
+  }
   reading.nextNode?.classList.add('shadow-next');
+  updatePracticePronunciation(reading);
+  renderPracticeReviews(reading);
   scrollPracticeWord(reading);
 }
 
@@ -345,7 +492,10 @@ function startPractice(kind) {
   let cueIndex = findCueIndex(cues, time);
   if (cueIndex < 0) cueIndex = Math.max(0, cues.findIndex((cue) => cue.end > time));
   const wordIndex = Math.max(0, findWordIndex(tracker.cues[cueIndex].words, time));
-  const reading = { kind, tracker, position: tracker.seek(cueIndex, wordIndex), painted: new Set(), speaking: false, error: '' };
+  const mediaId = kind === 'detail' ? `youtube:${detail.item.id}` : `podcast:${podcast.selectedChannel}:${podcast.selectedEpisode.id}`;
+  const reviews = new ShadowingReviewLog(tracker.cues, getShadowingReviews(mediaId));
+  reviews.begin(cueIndex, wordIndex);
+  const reading = { kind, mediaId, tracker, reviews, position: tracker.seek(cueIndex, wordIndex), painted: new Set(), speaking: false, error: '', ipa: [], exampleRun: 0, exampleActive: false, exampleResume: false };
   reading.follower = new SilentMediaFollower(practiceAdapter(kind));
   if (!speechSession) speechSession = new SpeechSession();
   reading.speech = speechSession;
@@ -354,6 +504,8 @@ function startPractice(kind) {
       if (practice !== reading) return;
       const previousTranscript = reading.position.transcript;
       reading.position = tracker.consume(alternatives, options);
+      reviews.record(reading.position, tracker.alignedWords);
+      persistPracticeReviews(reading, true);
       reading.mismatch = Boolean(reading.position.transcript && reading.position.transcript !== previousTranscript && !reading.position.advanced && !reading.position.done);
       if (reading.position.advanced) reading.follower.follow(reading.position.time);
       syncPractice(reading);
@@ -404,6 +556,9 @@ function stopPractice({ resume = true } = {}) {
   const reading = practice;
   if (!reading) return;
   practice = null;
+  cancelPracticePronunciation(reading);
+  reading.reviews.finish();
+  persistPracticeReviews(reading);
   reading.speech.pause();
   reading.speech.onResult = () => {};
   reading.speech.onState = () => {};
@@ -411,12 +566,17 @@ function stopPractice({ resume = true } = {}) {
   reading.follower.restore({ resume });
   const pane = reading.kind === 'detail' ? videoDetail : podcastPane;
   pane.classList.remove('shadowing-active');
-  pane.querySelectorAll('.shadow-spoken, .shadow-next').forEach((word) => word.classList.remove('shadow-spoken', 'shadow-next'));
+  pane.querySelectorAll('.shadow-spoken, .shadow-next, .shadow-missed').forEach((word) => {
+    word.classList.remove('shadow-spoken', 'shadow-next', 'shadow-missed');
+    word.removeAttribute('data-ipa');
+    word.removeAttribute('title');
+  });
   practicePanels[reading.kind].root.classList.add('hidden');
   if (reading.kind === 'detail') { detailPlayerMount.inert = false; syncDetail(); }
   else {
     for (const id of ['podcast-speed', 'podcast-follow', 'podcast-offset', 'podcast-offset-reset']) document.getElementById(id).disabled = false;
     updatePodcastPlayButton();
+    alignPodcastSubtitleRows();
     syncPodcast();
   }
   updatePracticeControls();
@@ -427,12 +587,19 @@ function seekPracticeCue(cueIndex, wordIndex = 0) {
   if (!practice) return;
   const reading = practice;
   const index = Math.max(0, Math.min(reading.tracker.cues.length - 1, cueIndex));
-  const listening = reading.speech.requested;
+  const listening = reading.speech.requested || reading.exampleResume;
+  cancelPracticePronunciation(reading);
   reading.speech.pause();
   reading.position = reading.tracker.seek(index, wordIndex);
+  reading.reviews.begin(index, wordIndex);
+  persistPracticeReviews(reading, true);
   reading.mismatch = false;
   const pane = reading.kind === 'detail' ? videoDetail : podcastPane;
-  pane.querySelectorAll('.shadow-spoken, .shadow-next').forEach((word) => word.classList.remove('shadow-spoken', 'shadow-next'));
+  pane.querySelectorAll('.shadow-spoken, .shadow-next').forEach((word) => {
+    word.classList.remove('shadow-spoken', 'shadow-next');
+    word.removeAttribute('data-ipa');
+    word.removeAttribute('title');
+  });
   reading.painted.clear();
   reading.follower.jump(reading.position.time);
   syncPractice(reading);
@@ -1005,7 +1172,7 @@ function alignPodcastSubtitleRows() {
     pair.en.style.minHeight = '';
     pair.zh.style.minHeight = '';
   }
-  if (window.matchMedia('(max-width: 600px)').matches) return;
+  if (practiceFor('podcast') || window.matchMedia('(max-width: 600px)').matches) return;
   const heights = podcastCueEls.map((pair) => Math.ceil(Math.max(pair.en.getBoundingClientRect().height, pair.zh.getBoundingClientRect().height)));
   podcastCueEls.forEach((pair, index) => {
     pair.en.style.minHeight = `${heights[index]}px`;
@@ -1025,10 +1192,11 @@ function renderPodcastSubtitles() {
   for (const button of [podcastPrev, podcastNext, podcastRepeat, podcastDownload]) button.disabled = !podcast.cues.length;
 
   podcast.cues.forEach((cue, index) => {
-    const enRow = h('button', {
-      class: 'podcast-cue',
+    const enRow = h('div', { class: 'podcast-cue', onclick: () => playPodcastCue(index) });
+    const content = h('button', {
+      class: 'subtitle-cue-main',
       type: 'button',
-      onclick: () => playPodcastCue(index),
+      onclick: (event) => { event.stopPropagation(); playPodcastCue(index); },
     }, h('span', { class: 'podcast-time' }, formatTimestamp(cue.start)));
     const enLine = h('span', { class: 'podcast-en' });
     const wordNodes = [];
@@ -1040,8 +1208,10 @@ function renderPodcastSubtitles() {
       if (wordIndex < words.length - 1) enLine.append(document.createTextNode(' '));
     });
     if (!words.length) enLine.textContent = cue.en;
-    enRow.append(enLine);
-    if (cue.zh) enRow.append(h('span', { class: 'podcast-inline-zh', lang: 'zh-CN' }, cue.zh));
+    content.append(enLine);
+    if (cue.zh) content.append(h('span', { class: 'podcast-inline-zh', lang: 'zh-CN' }, cue.zh));
+    const review = createPracticeReview(index);
+    enRow.append(content, review.root);
 
     const zhRow = h('button', {
       class: 'podcast-cue',
@@ -1061,7 +1231,7 @@ function renderPodcastSubtitles() {
     }
     zhRow.append(zhLine);
 
-    podcastCueEls.push({ en: enRow, zh: zhRow });
+    podcastCueEls.push({ en: enRow, zh: zhRow, review });
     podcastWordEls.push(wordNodes);
     podcastCharEls.push(chars);
     podcastEn.append(enRow);
@@ -1751,8 +1921,9 @@ function renderDetailSubtitles() {
   detail.activeWord = -1;
   detail.activeChars = -1;
 
-  detail.cues.forEach((cue) => {
-    const enRow = h('button', { class: 'detail-cue', type: 'button', onclick: () => seekDetail(cue) },
+  detail.cues.forEach((cue, index) => {
+    const enRow = h('div', { class: 'detail-cue', onclick: () => seekDetail(cue) });
+    const content = h('button', { class: 'subtitle-cue-main', type: 'button', onclick: (event) => { event.stopPropagation(); seekDetail(cue); } },
       h('span', { class: 'detail-time' }, formatTimestamp(cue.start)));
     const enLine = h('span', { class: 'detail-en' });
     const wordNodes = [];
@@ -1763,8 +1934,10 @@ function renderDetailSubtitles() {
       if (wordIndex < cue.words.length - 1) enLine.append(document.createTextNode(' '));
     }
     if (!wordNodes.length) enLine.textContent = cue.en;
-    enRow.append(enLine);
-    if (cue.zh) enRow.append(h('span', { class: 'detail-inline-zh', lang: 'zh-CN' }, cue.zh));
+    content.append(enLine);
+    if (cue.zh) content.append(h('span', { class: 'detail-inline-zh', lang: 'zh-CN' }, cue.zh));
+    const review = createPracticeReview(index);
+    enRow.append(content, review.root);
 
     const zhRow = h('button', { class: 'detail-cue', type: 'button', onclick: () => seekDetail(cue) },
       h('span', { class: 'detail-time' }, formatTimestamp(cue.start)));
@@ -1780,7 +1953,7 @@ function renderDetailSubtitles() {
       zhLine.textContent = detail.translating ? '…' : '—';
     }
     zhRow.append(zhLine);
-    detailCueEls.push({ en: enRow, zh: zhRow });
+    detailCueEls.push({ en: enRow, zh: zhRow, review });
     detailWordEls.push(wordNodes);
     detailCharEls.push(chars);
     detailEn.append(enRow);
@@ -2485,7 +2658,12 @@ if ('ResizeObserver' in window) {
   practiceResize.observe(podcastEn);
 }
 window.addEventListener('pagehide', () => stopPractice({ resume: false }));
-document.addEventListener('visibilitychange', () => { if (document.hidden && practice) practice.speech.pause(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && practice) {
+    cancelPracticePronunciation(practice);
+    practice.speech.pause();
+  }
+});
 podcastAudio.addEventListener('volumechange', () => { if (practiceFor('podcast') && !podcastAudio.muted) podcastAudio.muted = true; });
 
 try { state.treeCollapsed = localStorage.getItem(TREE_KEY) === '1'; } catch { /* ignore */ }

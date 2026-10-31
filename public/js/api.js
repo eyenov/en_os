@@ -84,6 +84,27 @@ async function parseError(response) {
   return new ApiError(message, code, response.status);
 }
 
+const pronunciationCache = new Map();
+
+export function getWordPronunciation(text) {
+  const word = String(text || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u2018\u2019]/g, "'").replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '').toLowerCase();
+  if (!/^[a-z0-9]+(?:['-][a-z0-9]+)*$/.test(word) || word.length > 80) return Promise.resolve({ word, ipa: [] });
+  if (pronunciationCache.has(word)) return pronunciationCache.get(word);
+  const request = fetch(`/api/pronunciation?word=${encodeURIComponent(word)}`, {
+    headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000),
+  }).then(async (response) => {
+    if (!response.ok) throw await parseError(response);
+    return response.json();
+  }).catch((error) => {
+    pronunciationCache.delete(word);
+    throw error;
+  });
+  pronunciationCache.set(word, request);
+  if (pronunciationCache.size > 1000) pronunciationCache.delete(pronunciationCache.keys().next().value);
+  return request;
+}
+
 export async function chat({ messages, json = false, maxTokens = 1400, temperature = 0.7, signal, settings = getSettings() } = {}) {
   const config = configFor(settings);
   if (!config.apiKey && !providerHasEnvKey(config.provider)) {
