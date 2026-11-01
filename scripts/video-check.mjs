@@ -20,6 +20,7 @@ const BASE = process.env.ENOS_URL || 'http://127.0.0.1:8787';
 const SHOTS = path.resolve('.shots');
 const PROFILE = path.resolve('.chrome-video-profile');
 const MOBILE = process.argv.includes('--mobile') || process.env.ENOS_MOBILE === '1';
+const GRID_SCALE = 24;
 const LAYOUT_ONLY = process.argv.includes('--layout');
 const VIEWPORT = MOBILE
   ? { width: 390, height: 844, screenWidth: 390, screenHeight: 844, deviceScaleFactor: 1, mobile: true }
@@ -633,14 +634,14 @@ async function main() {
       window.__WINDOW_PLAYING__ = window.__VIDEO_PLAYER__.playing;
       window.__WINDOW_EN__ = { ...layout.find(item => item.id === 'en') };
       document.getElementById('detail-chat-input').value = 'A draft that must survive rearranging';
-      return { width: grid.cellWidth(), height: grid.getCellHeight() };
+      return { width: grid.cellWidth() * ${GRID_SCALE}, height: grid.getCellHeight() * ${GRID_SCALE} };
     })()`);
     layoutChecks.fourIndependentWindows = await cdp.evaluate(`document.querySelectorAll('#detail-window-grid > .detail-panel').length === 4 && document.querySelectorAll('#detail-window-grid .detail-panel-handle').length === 4 && !document.getElementById('detail-resize')`);
     const sameColumn = await cdp.evaluate(`(() => {
       const video = document.querySelector('[data-panel="video"]').gridstackNode;
       const agent = document.querySelector('[data-panel="agent"]').gridstackNode;
       window.__COLUMN_WIDTH_BEFORE__ = agent.w;
-      return (video.y - agent.y + (video.h - agent.h) / 2 - 1) * document.getElementById('detail-window-grid').gridstack.getCellHeight();
+      return (video.y - agent.y + (video.h - agent.h) / 2 - ${GRID_SCALE}) * document.getElementById('detail-window-grid').gridstack.getCellHeight();
     })()`);
     await dragWindow(cdp, '[data-panel="agent"] .detail-panel-handle', 0, sameColumn, MOBILE);
     layoutChecks.sameColumnDragKeepsWidth = await cdp.evaluate(`(() => {
@@ -652,7 +653,7 @@ async function main() {
     const sameColumnDown = await cdp.evaluate(`(() => {
       const video = document.querySelector('[data-panel="video"]').gridstackNode;
       const agent = document.querySelector('[data-panel="agent"]').gridstackNode;
-      return (video.y - agent.y + (video.h - agent.h) / 2 + 1) * document.getElementById('detail-window-grid').gridstack.getCellHeight();
+      return (video.y - agent.y + (video.h - agent.h) / 2 + ${GRID_SCALE}) * document.getElementById('detail-window-grid').gridstack.getCellHeight();
     })()`);
     await dragWindow(cdp, '[data-panel="agent"] .detail-panel-handle', 0, sameColumnDown, MOBILE);
     layoutChecks.sameColumnDownKeepsWidth = await cdp.evaluate(`(() => {
@@ -669,7 +670,7 @@ async function main() {
         const video = document.querySelector('[data-panel="video"]').gridstackNode;
         const agent = document.querySelector('[data-panel="agent"]').gridstackNode;
         const english = document.querySelector('[data-panel="en"]').gridstackNode;
-        return agent.x === english.x && agent.w === window.__DESTINATION_WIDTH__ && english.w === agent.w && video.w === 6
+        return agent.x === english.x && agent.w === window.__DESTINATION_WIDTH__ && english.w === agent.w && video.w === 6 * ${GRID_SCALE}
           && new Set(document.getElementById('detail-window-grid').gridstack.engine.nodes.map(node => node.x)).size === 3;
       })()`);
       layoutChecks.crossColumnStacksCompactly = await checkVideoColumns(cdp);
@@ -682,7 +683,7 @@ async function main() {
       layoutChecks.lowerResizeUpdatesWholeColumn = await cdp.evaluate(`(() => {
         const video = document.querySelector('[data-panel="video"]').gridstackNode;
         const agent = document.querySelector('[data-panel="agent"]').gridstackNode;
-        return agent.w > 6 && video.w === agent.w && video.x === agent.x;
+        return agent.w > 6 * ${GRID_SCALE} && video.w === agent.w && video.x === agent.x;
       })()`);
       layoutChecks.columnResizeTilesWholeWidth = await checkVideoColumns(cdp);
       if (!layoutChecks.lowerResizeUpdatesWholeColumn || !layoutChecks.columnResizeTilesWholeWidth) console.error('    column resize state', await cdp.evaluate(`(() => {
@@ -721,7 +722,7 @@ async function main() {
         const index = sorted.indexOf(node);
         const neighbor = ${MOBILE} ? sorted[index > 0 ? index - 1 : index + 1] : sorted.find(other => other.x !== node.x);
         const distance = neighbor.y - node.y;
-        return { x: node.x, y: node.y, deltaX: ${MOBILE} ? 0 : (neighbor.x - node.x) * grid.cellWidth(), deltaY: ${MOBILE} ? (distance + (neighbor.h - node.h) / 2 + Math.sign(distance)) * grid.getCellHeight() : 0 };
+        return { x: node.x, y: node.y, deltaX: ${MOBILE} ? 0 : (neighbor.x - node.x) * grid.cellWidth(), deltaY: ${MOBILE} ? (distance + (neighbor.h - node.h) / 2 + Math.sign(distance) * ${GRID_SCALE}) * grid.getCellHeight() : 0 };
       })()`);
       await dragWindow(cdp, `[data-panel="${id}"] .detail-panel-handle`, previous.deltaX, previous.deltaY, MOBILE);
       const moved = await cdp.evaluate(`(() => { const node = document.querySelector('[data-panel="${id}"]').gridstackNode; return node.x !== ${previous.x} || node.y !== ${previous.y}; })()`);
@@ -745,14 +746,14 @@ async function main() {
     layoutChecks.lowerHeightFollowsUpper = MOBILE || await cdp.evaluate(`(() => {
       const video = document.querySelector('[data-panel="video"]').gridstackNode;
       const agent = document.querySelector('[data-panel="agent"]').gridstackNode;
-      return agent.y === video.y + video.h && agent.h === 12 - agent.y;
+      return agent.y === video.y + video.h && agent.h === 12 * ${GRID_SCALE} - agent.y;
     })()`);
     await cdp.evaluate(`(() => {
       const panel = document.querySelector('[data-panel="zh"]');
       window.__BEFORE_KEYBOARD_SIZE__ = panel.gridstackNode[${JSON.stringify(MOBILE ? 'h' : 'w')}];
       panel.querySelector('button').dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(MOBILE ? 'ArrowDown' : 'ArrowRight')}, shiftKey: true, bubbles: true }));
     })()`);
-    layoutChecks.keyboardResizesWindow = await cdp.evaluate(`document.querySelector('[data-panel="zh"]').gridstackNode[${JSON.stringify(MOBILE ? 'h' : 'w')}] === window.__BEFORE_KEYBOARD_SIZE__ + 1`);
+    layoutChecks.keyboardResizesWindow = await cdp.evaluate(`document.querySelector('[data-panel="zh"]').gridstackNode[${JSON.stringify(MOBILE ? 'h' : 'w')}] === window.__BEFORE_KEYBOARD_SIZE__ + ${GRID_SCALE}`);
     await settleVideoLayout(cdp);
     layoutChecks.windowsAvoidOverlap = await cdp.evaluate(`(() => {
       const grid = document.getElementById('detail-window-grid').gridstack;
@@ -760,7 +761,7 @@ async function main() {
       return items.every((item, index) => items.slice(index + 1).every(other => item.right <= other.left + 1 || other.right <= item.left + 1 || item.bottom <= other.top + 1 || other.bottom <= item.top + 1));
     })()`);
     layoutChecks.positionsSavedWithoutContent = await cdp.evaluate(`(() => {
-      const stored = JSON.parse(localStorage.getItem(${JSON.stringify(MOBILE ? 'enos.youtube.layout.v1.mobile' : 'enos.youtube.layout.v1')}));
+      const stored = JSON.parse(localStorage.getItem(${JSON.stringify(MOBILE ? 'enos.youtube.layout.v2.mobile' : 'enos.youtube.layout.v2')}));
       return stored.length === 4 && stored.every(item => Object.keys(item).sort().join(',') === 'h,id,w,x,y');
     })()`);
     layoutChecks.freshControllerRestoresSavedLayout = await checkRestoredVideoLayout(cdp);
@@ -786,7 +787,7 @@ async function main() {
     await settleVideoLayout(cdp);
     layoutChecks.hiddenColumnLeavesNoGaps = await checkVideoColumns(cdp);
     layoutChecks.hiddenVideoKeepsPlayer = await cdp.evaluate(`window.__VIDEO_PLAYER__ === window.__WINDOW_PLAYER__ && window.__PLAYER_FRAME__.isConnected && window.__PLAYER_FRAME__.parentElement === window.__WINDOW_FRAME_PARENT__ && window.__PLAYER_FRAME__.contentWindow === window.__WINDOW_FRAME_CONTEXT__ && window.__VIDEO_PLAYER__.time === window.__WINDOW_TIME__`);
-    layoutChecks.visibilitySaved = await cdp.evaluate(`JSON.stringify(JSON.parse(localStorage.getItem('enos.youtube.visibility.v1'))) === JSON.stringify(['en', 'zh']) && JSON.parse(localStorage.getItem('enos.youtube.layout.v1')).length === 4`);
+    layoutChecks.visibilitySaved = await cdp.evaluate(`JSON.stringify(JSON.parse(localStorage.getItem('enos.youtube.visibility.v1'))) === JSON.stringify(['en', 'zh']) && JSON.parse(localStorage.getItem('enos.youtube.layout.v2')).length === 4`);
     layoutChecks.freshControllerRestoresVisibility = await checkRestoredVideoLayout(cdp);
     layoutChecks.thumbnailsReflectHiddenWindows = await cdp.evaluate(`[...document.querySelectorAll('#detail-layout-options input')].filter(input => input.checked).length === 2 && document.querySelector('#detail-layout-options [data-video-panel="video"]').closest('label').querySelector('.is-target.is-hidden') !== null`);
     await cdp.screenshot(MOBILE ? 'video-layout-hidden-mobile.png' : 'video-layout-hidden.png');
@@ -822,7 +823,7 @@ async function main() {
       const grid = document.getElementById('detail-window-grid').gridstack;
       const video = document.querySelector('[data-panel="video"]').gridstackNode;
       const english = document.querySelector('[data-panel="en"]').gridstackNode;
-      return grid.engine.nodes.length === 4 && video.x === 0 && video.y === 0 && (${MOBILE} ? video.w === 1 && english.y > video.y : video.w === 6 && english.x === 6 && english.w === 3);
+      return grid.engine.nodes.length === 4 && video.x === 0 && video.y === 0 && (${MOBILE} ? video.w === 1 && english.y > video.y : video.w === 6 * ${GRID_SCALE} && english.x === 6 * ${GRID_SCALE} && english.w === 3 * ${GRID_SCALE});
     })()`);
     await settleVideoLayout(cdp);
     await cdp.screenshot(MOBILE ? 'video-layout-mobile.png' : 'video-layout.png');

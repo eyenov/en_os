@@ -1,6 +1,6 @@
 import { beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { alignVideoColumns, defaultVideoLayout, fitVideoLayout, moveVideoWindow, normalizeVideoLayout, normalizeVideoVisibility, VIDEO_LAYOUT_KEY, VIDEO_PANEL_IDS, VIDEO_VISIBILITY_KEY, VideoWindowLayout } from '../public/js/video-layout.js';
+import { alignVideoColumns, defaultVideoLayout, findColumnGap, fitVideoLayout, moveVideoWindow, normalizeVideoLayout, normalizeVideoVisibility, LEGACY_VIDEO_LAYOUT_KEY, VIDEO_GRID_SCALE, VIDEO_LAYOUT_KEY, VIDEO_PANEL_IDS, VIDEO_VISIBILITY_KEY, VideoWindowLayout } from '../public/js/video-layout.js';
 
 const storage = new Map();
 globalThis.localStorage = {
@@ -67,9 +67,9 @@ test('lower windows follow the resized upper window and fill the remaining heigh
   assert.equal(fitVideoLayout(layout)[1].h, 9);
 });
 
-test('height fitting keeps standalone windows independent and respects the minimum height', () => {
-  assert.deepEqual(fitVideoLayout(defaultVideoLayout().filter((item) => item.id !== 'agent')),
-    defaultVideoLayout().filter((item) => item.id !== 'agent'));
+test('height fitting stretches a lone window over the full column and respects the minimum height', () => {
+  const fitted = fitVideoLayout(defaultVideoLayout().filter((item) => item.id !== 'agent'));
+  assert.deepEqual(fitted.map((item) => item.h), [12, 12, 12]);
   const layout = defaultVideoLayout();
   layout[1].y = 11;
   assert.equal(fitVideoLayout(layout)[1].h, 3);
@@ -148,6 +148,20 @@ test('dropping outside the outer edge can split a stack into a new tiled column'
   assert.ok(columns.every((item, index) => index === 0 || item[0] === columns[index - 1][0] + columns[index - 1][1]));
 });
 
+test('dropping between two columns inserts a new tiled column there', () => {
+  const layout = defaultVideoLayout();
+  const gap = findColumnGap(layout, 6.2, 0.5);
+  assert.deepEqual({ index: gap.index, edge: gap.edge, before: gap.before.x, after: gap.after.x }, { index: 1, edge: 6, before: 6, after: 0 });
+  assert.equal(findColumnGap(layout, 7.5, 0.5), null);
+  assert.equal(findColumnGap(layout, 12, 0.5).before, null);
+  const moved = alignVideoColumns(fitVideoLayout(alignVideoColumns(moveVideoWindow(layout, 'agent', 5.5))));
+  const columns = [...new Map(moved.map((item) => [item.x, item.w])).entries()].sort((left, right) => left[0] - right[0]);
+  assert.equal(columns.length, 4);
+  assert.ok(moved[1].x > moved[0].x && moved[1].x < moved[2].x);
+  assert.deepEqual([moved[0].h, moved[1].h], [12, 12]);
+  assert.equal(columns.reduce((sum, item) => sum + item[1], 0), 12);
+});
+
 test('stacking tall windows reserves the minimum height for every lower window', () => {
   const layout = alignVideoColumns(moveVideoWindow(defaultVideoLayout(), 'en', 0, 'agent'));
   const fitted = alignVideoColumns(fitVideoLayout(layout));
@@ -159,7 +173,7 @@ test('stacking tall windows reserves the minimum height for every lower window',
 });
 
 test('saving a displayed projection does not replace hidden column ownership', () => {
-  const desktop = defaultVideoLayout();
+  const desktop = defaultVideoLayout(6, VIDEO_GRID_SCALE);
   const controller = Object.assign(Object.create(VideoWindowLayout.prototype), {
     applying: false, gesture: false, mobile: false, mode: 'normal', shown: ['en', 'zh'], appliedLayout: alignVideoColumns(desktop.slice(2)),
     grid: { getGridItems: () => alignVideoColumns(desktop.slice(2)).map((item) => ({ gridstackNode: item })) },
@@ -179,7 +193,7 @@ test('window visibility accepts only supported IDs, including intentionally hidi
 });
 
 test('hidden windows keep their saved coordinates while visible windows change', () => {
-  const desktop = defaultVideoLayout();
+  const desktop = defaultVideoLayout(6, VIDEO_GRID_SCALE);
   const controller = Object.assign(Object.create(VideoWindowLayout.prototype), {
     applying: false, gesture: false, mobile: false, mode: 'normal', shown: ['en', 'zh'],
     grid: { getGridItems: () => [{ gridstackNode: { ...desktop[2], y: 2 } }, { gridstackNode: desktop[3] }, {}] },
@@ -203,8 +217,8 @@ test('temporary shadowing layouts respect visibility without overwriting normal 
 });
 
 test('mobile layout keeps full coordinates and ignores hidden panels without overwriting normal positions during practice', () => {
-  const desktop = defaultVideoLayout();
-  const mobile = VIDEO_PANEL_IDS.map((id, index) => ({ id, x: 0, y: index * 6, w: 1, h: 6 }));
+  const desktop = defaultVideoLayout(6, VIDEO_GRID_SCALE);
+  const mobile = VIDEO_PANEL_IDS.map((id, index) => ({ id, x: 0, y: index * 6 * VIDEO_GRID_SCALE, w: 1, h: 6 * VIDEO_GRID_SCALE }));
   const controller = Object.assign(Object.create(VideoWindowLayout.prototype), {
     applying: false, gesture: false, mobile: true, mode: 'normal',
     grid: { getGridItems: () => [...mobile.map((item) => ({ gridstackNode: { ...item, content: 'not saved' } })), {}] },
@@ -230,11 +244,21 @@ test('window rows exclude host padding and keep normal mobile rows independently
     grid: { cellHeight: (value) => { rowHeight = value; } }, mobile: false, mode: 'normal',
   });
   controller.updateCellHeight();
-  assert.equal(rowHeight, 33);
+  assert.equal(rowHeight, 33.75 / VIDEO_GRID_SCALE);
   controller.mobile = true;
   controller.updateCellHeight();
-  assert.equal(rowHeight, 48);
+  assert.equal(rowHeight, 48 / VIDEO_GRID_SCALE);
   controller.mode = 'shadowing';
   controller.updateCellHeight();
-  assert.equal(rowHeight, 33);
+  assert.equal(rowHeight, 33.75 / VIDEO_GRID_SCALE);
+});
+
+test('layouts saved on the coarse 12-unit grid migrate to the fine resize grid', () => {
+  const coarse = defaultVideoLayout(7);
+  storage.set(LEGACY_VIDEO_LAYOUT_KEY, JSON.stringify(coarse));
+  storage.set(`${LEGACY_VIDEO_LAYOUT_KEY}.mobile`, JSON.stringify(VIDEO_PANEL_IDS.map((id, index) => ({ id, x: 0, y: index * 5, w: 1, h: 5 }))));
+  const controller = Object.create(VideoWindowLayout.prototype);
+  assert.deepEqual(controller.readDesktop(), defaultVideoLayout(7, VIDEO_GRID_SCALE));
+  assert.deepEqual(controller.readMobile()[1], { id: 'agent', x: 0, y: 5 * VIDEO_GRID_SCALE, w: 1, h: 5 * VIDEO_GRID_SCALE });
+  assert.deepEqual(normalizeVideoLayout(coarse, VIDEO_GRID_SCALE), defaultVideoLayout(6, VIDEO_GRID_SCALE));
 });
