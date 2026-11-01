@@ -18,7 +18,7 @@ import {
 import { getSettings, getShadowingReviews, saveShadowingReviews } from './store.js';
 import { ShadowingReviewLog, ShadowingTracker, SilentMediaFollower, SpeechSession } from './shadowing.js';
 import { PronunciationPlayer } from './pronunciation.js';
-import { defaultVideoLayout, VideoWindowLayout } from './video-layout.js';
+import { defaultVideoLayout, VIDEO_LAYOUT_KEY, VIDEO_VISIBILITY_KEY, VideoWindowLayout } from './video-layout.js';
 import { activeCharCount, cueProgress, findCueIndex, findWordIndex, formatTimestamp, normalizeCues, serializeSrt } from './subtitle-sync.js';
 import { bindFullscreen, h, icon, toast } from './ui.js';
 import { renderSettings } from './views/settings.js';
@@ -2682,6 +2682,17 @@ document.addEventListener('visibilitychange', () => {
 });
 podcastAudio.addEventListener('volumechange', () => { if (practiceFor('podcast') && !podcastAudio.muted) podcastAudio.muted = true; });
 
+if (params.get('reset') === '1') {
+  try {
+    localStorage.removeItem(TREE_KEY);
+    localStorage.removeItem(VIDEO_LAYOUT_KEY);
+    localStorage.removeItem(VIDEO_VISIBILITY_KEY);
+    localStorage.removeItem('enos.detail.left.v1');
+  } catch { /* ignore */ }
+  params.delete('reset');
+  const query = params.toString();
+  history.replaceState(null, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash}`);
+}
 try { state.treeCollapsed = localStorage.getItem(TREE_KEY) === '1'; } catch { /* ignore */ }
 setTreeCollapsed(compactViewport.matches || state.treeCollapsed);
 

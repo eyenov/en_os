@@ -223,6 +223,19 @@ async function handleYoutubeTranslateFree(req, res) {
 }
 
 async function handleStatic(req, res, urlPath) {
+  if (urlPath === '/watch' || urlPath === '/watch/' || urlPath === '/watch.html') {
+    const fallback = path.join(PUBLIC_DIR, '404.html');
+    const body = await stat(fallback);
+    res.writeHead(404, {
+      ...SECURITY_HEADERS,
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Content-Length': body.size,
+    });
+    if (req.method === 'HEAD') res.end();
+    else await pipeline(createReadStream(fallback), res);
+    return;
+  }
   let filePath;
   if (urlPath === '/' || urlPath === '/index.html') {
     filePath = path.join(PUBLIC_DIR, 'videos.html');
@@ -263,10 +276,11 @@ async function handleStatic(req, res, urlPath) {
   }
 
   const ext = path.extname(resolved).toLowerCase();
+  const codeAsset = ['.html', '.htm', '.js', '.mjs', '.css'].includes(ext);
   res.writeHead(200, {
     ...SECURITY_HEADERS,
     'Content-Type': MIME[ext] || 'application/octet-stream',
-    'Cache-Control': 'no-cache',
+    'Cache-Control': codeAsset ? 'no-store, max-age=0' : 'no-cache',
     'Content-Length': info.size,
   });
   if (req.method === 'HEAD') res.end();
