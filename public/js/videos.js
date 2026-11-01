@@ -2,22 +2,27 @@ import {
   aiReady,
   bookFileUrl,
   chatStream,
+  errorMessage,
   fetchVideoCaptions,
   getBooks,
   getHealth,
   getPodcastChannels,
   getPodcastEpisode,
   getPodcastEpisodes,
+  getWordPronunciation,
   readBook,
   searchVideos,
   translateVideoCaptions,
   translateVideoCaptionsFree,
 } from './api.js';
-import { getSettings } from './store.js';
-import { ShadowingTracker, SilentMediaFollower, SpeechSession } from './shadowing.js';
+import { getSettings, getShadowingReviews, saveShadowingReviews } from './store.js';
+import { ShadowingReviewLog, ShadowingTracker, SilentMediaFollower, SpeechSession } from './shadowing.js';
+import { PronunciationPlayer } from './pronunciation.js';
+import { VideoWindowLayout } from './video-layout.js';
 import { activeCharCount, cueProgress, findCueIndex, findWordIndex, formatTimestamp, normalizeCues, serializeSrt } from './subtitle-sync.js';
-import { h, icon, toast } from './ui.js';
+import { bindFullscreen, h, icon, toast } from './ui.js';
 import { renderSettings } from './views/settings.js';
+import { getLocale, msg, setI18nAttribute, setText, t } from './i18n.js';
 
 const form = document.getElementById('video-search');
 const input = document.getElementById('video-q');
@@ -39,6 +44,7 @@ const settingsView = document.getElementById('settings-view');
 let settingsReady = false;
 let practice = null;
 let speechSession = null;
+let pronunciationPlayer = null;
 const params = new URLSearchParams(window.location.search);
 if (window.location.hash.startsWith('#/')) {
   const legacyRoute = window.location.hash.slice(2).split('?')[0];
@@ -136,7 +142,7 @@ const detailMessages = document.getElementById('detail-messages');
 const detailChatForm = document.getElementById('detail-chat-form');
 const detailChatInput = document.getElementById('detail-chat-input');
 const detailChatSend = document.getElementById('detail-chat-send');
-const detailResize = document.getElementById('detail-resize');
+let detailWindows = null;
 const detailBack = document.getElementById('detail-back');
 let detailCueEls = [];
 let detailWordEls = [];
@@ -195,7 +201,8 @@ function createPracticePanel(kind) {
   const status = h('span', { class: 'shadowing-status-text', role: 'status' });
   const stats = h('span', { class: 'shadowing-stats' });
   const next = h('strong');
-  const transcript = h('span', { class: 'shadowing-transcript' });
+  const ipa = h('span', { class: 'shadowing-ipa', lang: 'en' });
+  const transcript = h('span', { class: 'shadowing-transcript', translate: 'no' });
   const progress = h('progress', { max: 1, value: 0, 'aria-label': '跟读进度' });
   const command = (name, label, handler) => h('button', {
     class: 'studio-icon-button', type: 'button', title: label, 'aria-label': label, onclick: handler,
@@ -204,16 +211,150 @@ function createPracticePanel(kind) {
   const skip = command('arrowRight', '下一句', () => seekPracticeCue((practice?.position.cueIndex || 0) + 1));
   const listen = command('pause', '暂停麦克风', togglePracticeListening);
   const close = command('close', '结束跟读', () => stopPractice());
+  const pronounce = command('volume', '播放下一词发音', () => playPracticePronunciation(kind));
+  pronounce.classList.add('shadowing-pronounce');
   root.replaceChildren(
     h('div', { class: 'shadowing-top' },
       h('div', { class: 'shadowing-status' }, h('span', { class: 'shadowing-signal', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')), status),
       stats,
       h('div', { class: 'shadowing-commands' }, repeat, skip, listen, close),
     ),
-    h('div', { class: 'shadowing-bottom' }, h('span', { class: 'shadowing-prompt' }, h('small', {}, '下一词'), next), transcript),
+    h('div', { class: 'shadowing-bottom' }, h('div', { class: 'shadowing-prompt' }, h('small', {}, '下一词'), next, ipa, pronounce), transcript),
     progress,
   );
-  return { root, status, stats, next, transcript, progress, listen, skip };
+  return { root, status, stats, next, ipa, pronounce, transcript, progress, listen, skip, repeat };
+}
+
+function createPracticeReview(cueIndex) {
+  const meta = h('small', { class: 'shadowing-review-meta' });
+  const summary = h('strong', { class: 'shadowing-review-summary' }, '待跟读');
+  const advice = h('p', { class: 'shadowing-review-advice' });
+  const historyLabel = h('span');
+  const list = h('ol', { class: 'shadowing-review-list' });
+  const history = h('details', { class: 'shadowing-review-history' },
+    h('summary', { title: '查看每次跟读记录', 'aria-label': msg('查看第 {{number}} 句跟读记录', { number: cueIndex + 1 }) }, h('span', { html: icon('clock', 13) }), historyLabel), list);
+  const root = h('aside', {
+    class: 'shadowing-review is-empty', 'aria-label': msg('第 {{number}} 句跟读点评', { number: cueIndex + 1 }), onclick: (event) => event.stopPropagation(),
+  }, meta, summary, advice, history);
+  return { root, meta, summary, advice, history, historyLabel, list };
+}
+
+function renderPracticeReviews(reading) {
+  const pairs = reading.kind === 'detail' ? detailCueEls : podcastCueEls;
+  const words = reading.kind === 'detail' ? detailWordEls : podcastWordEls;
+  for (const cueIndex of new Set([reading.position.cueIndex, ...reading.reviews.history.keys()])) {
+    const view = pairs[cueIndex]?.review;
+    if (!view) continue;
+    const reviews = reading.reviews.reviews(cueIndex);
+    const signature = `${getLocale()}|${JSON.stringify(reviews)}`;
+    if (signature === view.signature) continue;
+    view.signature = signature;
+    view.root.dataset.count = String(reviews.length);
+    view.root.classList.toggle('is-empty', !reviews.length);
+    const latest = reviews.at(-1);
+    if (!latest) continue;
+    view.root.dataset.status = latest.status;
+    view.root.classList.toggle('needs-work', latest.missingWords.length > 0);
+    view.meta.replaceChildren(h('span', {}, msg('第 {{number}} 遍', { number: latest.number })), h('span', {}, msg('{{percent}}% 对齐', { percent: Math.round(latest.coverage * 100) })));
+    setText(view.summary, latest.summaryMessage);
+    setText(view.advice, latest.adviceMessage);
+    setText(view.historyLabel, '{{count}}次记录', { count: reviews.length });
+    view.list.replaceChildren(...[...reviews].reverse().map((review) => h('li', {
+      class: 'shadowing-review-record', dataset: { number: review.number, status: review.status },
+    }, h('small', {}, msg('第 {{number}} 遍 · {{status}}', { number: review.number, status: msg(review.status === 'complete' ? '已读完' : review.status === 'active' ? '跟读中' : '已结束') })),
+    h('strong', {}, review.summaryMessage), h('p', {}, review.adviceMessage))));
+    for (const word of words[cueIndex] || []) word.classList.remove('shadow-missed');
+    for (const wordIndex of latest.missingWordIndexes) words[cueIndex]?.[wordIndex]?.classList.add('shadow-missed');
+  }
+}
+
+function persistPracticeReviews(reading, delayed = false) {
+  clearTimeout(reading.saveTimer);
+  if (delayed) { reading.saveTimer = setTimeout(() => persistPracticeReviews(reading), 400); return; }
+  const records = reading.reviews.export();
+  if (!records.length) return;
+  if (!saveShadowingReviews(reading.mediaId, records) && !reading.storageWarning) {
+    reading.storageWarning = true;
+    toast('点评暂时只保留在当前页面，浏览器存储不可用。', 'err');
+  }
+}
+
+function cancelPracticePronunciation(reading, { resume = false } = {}) {
+  const shouldResume = reading.exampleResume;
+  reading.exampleRun += 1;
+  reading.exampleActive = false;
+  reading.exampleResume = false;
+  pronunciationPlayer?.cancel();
+  if (practice !== reading) return;
+  if (resume && shouldResume && !document.hidden && !reading.position.done) reading.speech.start();
+  renderPractice(reading);
+}
+
+async function playPracticePronunciation(kind) {
+  const reading = practiceFor(kind);
+  if (!reading || reading.position.done) return;
+  if (reading.exampleActive) { cancelPracticePronunciation(reading, { resume: true }); return; }
+  pronunciationPlayer ??= new PronunciationPlayer();
+  const word = reading.position.nextWord.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '');
+  if (!word || !pronunciationPlayer.supported) return;
+  const run = ++reading.exampleRun;
+  reading.exampleResume = reading.speech.requested;
+  reading.exampleActive = true;
+  reading.speech.pause();
+  reading.follower.hold();
+  renderPractice(reading);
+  try {
+    const released = await reading.speech.whenReleased();
+    if (practice !== reading || run !== reading.exampleRun) return;
+    if (!released) {
+      reading.exampleResume = false;
+      toast('麦克风未能释放，请结束跟读后重试。', 'err');
+      return;
+    }
+    await pronunciationPlayer.play(word);
+  } catch {
+    if (practice === reading && run === reading.exampleRun) toast('英语发音暂不可用，请检查浏览器或系统语音设置。', 'err');
+  } finally {
+    if (practice === reading && run === reading.exampleRun) {
+      const resume = reading.exampleResume;
+      reading.exampleActive = false;
+      reading.exampleResume = false;
+      renderPractice(reading);
+      if (resume && !document.hidden && !reading.position.done) reading.speech.start();
+    }
+  }
+}
+
+function updatePracticePronunciation(reading) {
+  const word = reading.position.nextWord;
+  const view = practicePanels[reading.kind];
+  if (reading.pronunciationWord !== word) {
+    reading.pronunciationWord = word;
+    reading.ipa = [];
+    reading.ipaLoading = Boolean(word);
+    if (word) getWordPronunciation(word).then((data) => {
+      if (practice !== reading || reading.pronunciationWord !== word) return;
+      reading.ipa = (Array.isArray(data.ipa) ? data.ipa : []).filter((value) => typeof value === 'string').slice(0, 4);
+      reading.ipaLoading = false;
+      renderPractice(reading);
+    }).catch(() => {
+      if (practice !== reading || reading.pronunciationWord !== word) return;
+      reading.ipaLoading = false;
+      renderPractice(reading);
+    });
+  }
+  setText(view.ipa, !word ? '' : reading.ipaLoading ? '查音标…' : reading.ipa.length ? '{{ipa}}' : '音标暂缺', { ipa: reading.ipa.join(' · ') });
+  setI18nAttribute(view.ipa, 'title', reading.ipa.length ? msg('美式词典读音：{{ipa}}', { ipa: reading.ipa.join('，') }) : '词典未收录音标时仍可播放英语发音');
+  view.pronounce.disabled = !word || !window.SpeechSynthesisUtterance || !window.speechSynthesis;
+  const label = reading.exampleActive ? '停止发音示例' : msg('播放 {{word}} 的发音示例', { word });
+  setI18nAttribute(view.pronounce, 'title', label);
+  setI18nAttribute(view.pronounce, 'aria-label', label);
+  view.pronounce.classList.toggle('is-playing', reading.exampleActive);
+  view.pronounce.innerHTML = icon(reading.exampleActive ? 'stop' : 'volume', 17);
+  if (reading.nextNode) {
+    reading.nextNode.dataset.ipa = reading.ipa[0] || '';
+    reading.nextNode.title = `${word}${reading.ipa.length ? ` ${reading.ipa.join('，')}` : ''}`;
+  }
 }
 
 function updatePracticeControls() {
@@ -224,7 +365,7 @@ function updatePracticeControls() {
     const active = Boolean(practiceFor(kind));
     button.disabled = !supported || !ready;
     button.setAttribute('aria-pressed', String(active));
-    button.title = !supported ? '语音识别需要支持此功能的浏览器与安全连接' : !ready ? '字幕与播放器尚未准备好' : active ? '结束跟读并恢复原播放设置' : '开始语音跟读，原声静音';
+    setI18nAttribute(button, 'title', !supported ? '语音识别需要支持此功能的浏览器与安全连接' : !ready ? '字幕与播放器尚未准备好' : active ? '结束跟读并恢复原播放设置' : '开始语音跟读，原声静音');
   }
 }
 
@@ -268,22 +409,25 @@ function renderPractice(reading) {
   const view = practicePanels[reading.kind];
   const position = reading.position;
   const states = { starting: '开启麦克风…', listening: reading.mismatch ? '等待语音对齐' : position.matchedWords ? '跟读中' : '等待朗读', paused: '麦克风已暂停', reconnecting: '重新连接…', error: reading.error || '识别已中断' };
-  view.status.textContent = position.done ? '本段已读完' : states[reading.speech.state] || '等待朗读';
-  view.status.title = view.status.textContent;
+  const status = reading.exampleActive ? '示范发音 · 麦克风暂停' : position.done ? '本段已读完' : states[reading.speech.state] || '等待朗读';
+  setText(view.status, status);
+  setI18nAttribute(view.status, 'title', status);
   view.root.classList.toggle('has-error', reading.speech.state === 'error');
   view.root.classList.toggle('is-speaking', reading.speaking && reading.speech.requested);
-  view.stats.textContent = `${Math.round(position.progress * 100)}%${position.pace && !window.matchMedia('(max-width: 600px)').matches ? ` · ${position.pace}词/分` : ''}`;
-  view.stats.title = `已匹配 ${position.matchedWords} 词`;
-  view.next.textContent = position.done ? '完成' : position.nextWord;
+  setText(view.stats, position.pace && !window.matchMedia('(max-width: 600px)').matches ? '{{percent}}% · {{pace}}词/分' : '{{percent}}%', { percent: Math.round(position.progress * 100), pace: position.pace });
+  setI18nAttribute(view.stats, 'title', msg('已匹配 {{count}} 词', { count: position.matchedWords }));
+  setText(view.next, position.done ? '完成' : '{{word}}', { word: position.nextWord });
   view.next.title = position.nextWord;
   view.transcript.textContent = position.transcript || '…';
   view.transcript.title = position.transcript;
   view.progress.value = position.progress;
   const label = position.done ? '重读当前句' : reading.speech.requested ? '暂停麦克风' : '继续跟读';
-  view.listen.title = label;
-  view.listen.setAttribute('aria-label', label);
+  setI18nAttribute(view.listen, 'title', label);
+  setI18nAttribute(view.listen, 'aria-label', label);
   view.listen.innerHTML = icon(reading.speech.requested ? 'pause' : 'mic', 17);
-  view.skip.disabled = position.cueIndex >= reading.tracker.cues.length - 1;
+  view.listen.disabled = reading.exampleActive;
+  view.repeat.disabled = reading.exampleActive;
+  view.skip.disabled = reading.exampleActive || position.cueIndex >= reading.tracker.cues.length - 1;
   const words = reading.kind === 'detail' ? detailWordEls : podcastWordEls;
   for (const key of reading.tracker.matched) {
     if (reading.painted.has(key)) continue;
@@ -291,9 +435,16 @@ function renderPractice(reading) {
     words[cueIndex]?.[wordIndex]?.classList.add('shadow-spoken');
     reading.painted.add(key);
   }
-  reading.nextNode?.classList.remove('shadow-next');
-  reading.nextNode = words[position.nextCueIndex]?.[position.nextWordIndex];
+  const nextNode = words[position.nextCueIndex]?.[position.nextWordIndex];
+  if (reading.nextNode !== nextNode) {
+    reading.nextNode?.classList.remove('shadow-next');
+    reading.nextNode?.removeAttribute('data-ipa');
+    reading.nextNode?.removeAttribute('title');
+    reading.nextNode = nextNode;
+  }
   reading.nextNode?.classList.add('shadow-next');
+  updatePracticePronunciation(reading);
+  renderPracticeReviews(reading);
   scrollPracticeWord(reading);
 }
 
@@ -345,7 +496,10 @@ function startPractice(kind) {
   let cueIndex = findCueIndex(cues, time);
   if (cueIndex < 0) cueIndex = Math.max(0, cues.findIndex((cue) => cue.end > time));
   const wordIndex = Math.max(0, findWordIndex(tracker.cues[cueIndex].words, time));
-  const reading = { kind, tracker, position: tracker.seek(cueIndex, wordIndex), painted: new Set(), speaking: false, error: '' };
+  const mediaId = kind === 'detail' ? `youtube:${detail.item.id}` : `podcast:${podcast.selectedChannel}:${podcast.selectedEpisode.id}`;
+  const reviews = new ShadowingReviewLog(tracker.cues, getShadowingReviews(mediaId));
+  reviews.begin(cueIndex, wordIndex);
+  const reading = { kind, mediaId, tracker, reviews, position: tracker.seek(cueIndex, wordIndex), painted: new Set(), speaking: false, error: '', ipa: [], exampleRun: 0, exampleActive: false, exampleResume: false };
   reading.follower = new SilentMediaFollower(practiceAdapter(kind));
   if (!speechSession) speechSession = new SpeechSession();
   reading.speech = speechSession;
@@ -354,6 +508,8 @@ function startPractice(kind) {
       if (practice !== reading) return;
       const previousTranscript = reading.position.transcript;
       reading.position = tracker.consume(alternatives, options);
+      reviews.record(reading.position, tracker.alignedWords);
+      persistPracticeReviews(reading, true);
       reading.mismatch = Boolean(reading.position.transcript && reading.position.transcript !== previousTranscript && !reading.position.advanced && !reading.position.done);
       if (reading.position.advanced) reading.follower.follow(reading.position.time);
       syncPractice(reading);
@@ -387,6 +543,7 @@ function startPractice(kind) {
   if (kind === 'detail') {
     stopDetailTicker();
     detailPlayerMount.inert = true;
+    detailWindows?.setShadowing(true);
     detail.cues = tracker.cues;
     renderDetailSubtitles();
   } else {
@@ -404,6 +561,9 @@ function stopPractice({ resume = true } = {}) {
   const reading = practice;
   if (!reading) return;
   practice = null;
+  cancelPracticePronunciation(reading);
+  reading.reviews.finish();
+  persistPracticeReviews(reading);
   reading.speech.pause();
   reading.speech.onResult = () => {};
   reading.speech.onState = () => {};
@@ -411,12 +571,17 @@ function stopPractice({ resume = true } = {}) {
   reading.follower.restore({ resume });
   const pane = reading.kind === 'detail' ? videoDetail : podcastPane;
   pane.classList.remove('shadowing-active');
-  pane.querySelectorAll('.shadow-spoken, .shadow-next').forEach((word) => word.classList.remove('shadow-spoken', 'shadow-next'));
+  pane.querySelectorAll('.shadow-spoken, .shadow-next, .shadow-missed').forEach((word) => {
+    word.classList.remove('shadow-spoken', 'shadow-next', 'shadow-missed');
+    word.removeAttribute('data-ipa');
+    word.removeAttribute('title');
+  });
   practicePanels[reading.kind].root.classList.add('hidden');
-  if (reading.kind === 'detail') { detailPlayerMount.inert = false; syncDetail(); }
+  if (reading.kind === 'detail') { detailPlayerMount.inert = false; detailWindows?.setShadowing(false); syncDetail(); }
   else {
     for (const id of ['podcast-speed', 'podcast-follow', 'podcast-offset', 'podcast-offset-reset']) document.getElementById(id).disabled = false;
     updatePodcastPlayButton();
+    alignPodcastSubtitleRows();
     syncPodcast();
   }
   updatePracticeControls();
@@ -427,12 +592,19 @@ function seekPracticeCue(cueIndex, wordIndex = 0) {
   if (!practice) return;
   const reading = practice;
   const index = Math.max(0, Math.min(reading.tracker.cues.length - 1, cueIndex));
-  const listening = reading.speech.requested;
+  const listening = reading.speech.requested || reading.exampleResume;
+  cancelPracticePronunciation(reading);
   reading.speech.pause();
   reading.position = reading.tracker.seek(index, wordIndex);
+  reading.reviews.begin(index, wordIndex);
+  persistPracticeReviews(reading, true);
   reading.mismatch = false;
   const pane = reading.kind === 'detail' ? videoDetail : podcastPane;
-  pane.querySelectorAll('.shadow-spoken, .shadow-next').forEach((word) => word.classList.remove('shadow-spoken', 'shadow-next'));
+  pane.querySelectorAll('.shadow-spoken, .shadow-next').forEach((word) => {
+    word.classList.remove('shadow-spoken', 'shadow-next');
+    word.removeAttribute('data-ipa');
+    word.removeAttribute('title');
+  });
   reading.painted.clear();
   reading.follower.jump(reading.position.time);
   syncPractice(reading);
@@ -496,7 +668,7 @@ function previewCard(item) {
   return h('button', {
     class: 'preview-card',
     type: 'button',
-    title: item.title,
+    title: msg('{{title}}', { title: item.title }),
     onclick: () => openVideoDetail(item),
   },
     h('div', { class: 'preview-thumb' },
@@ -506,11 +678,11 @@ function previewCard(item) {
       h('span', { class: 'preview-play' }, h('span', {}, h('span', { html: icon('play', 14) }))),
     ),
     h('div', { class: 'preview-body' },
-      h('div', { class: 'preview-title' }, item.title),
-      h('div', { class: 'preview-channel' }, item.channel || 'YouTube'),
-      item.description ? h('div', { class: 'preview-desc' }, item.description) : null,
+      h('div', { class: 'preview-title', translate: 'no' }, item.title),
+      h('div', { class: 'preview-channel', translate: 'no' }, item.channel || 'YouTube'),
+      item.description ? h('div', { class: 'preview-desc', translate: 'no' }, item.description) : null,
       h('div', { class: 'preview-meta' },
-        meta.map((text) => h('span', { class: 'preview-chip' }, text)),
+        meta.map((text) => h('span', { class: 'preview-chip', translate: 'no' }, text)),
         item.hasCaptions ? h('span', { class: 'preview-chip cc' }, '带字幕') : h('span', { class: 'preview-chip' }, '字幕待检测'),
       ),
       h('span', { class: 'preview-open' }, h('span', { html: icon('play', 12) }), '播放'),
@@ -521,9 +693,7 @@ function previewCard(item) {
 function renderChannels() {
   if (state.tab !== 'youtube' || state.view !== 'videos') return;
   channelList.replaceChildren();
-  treeCount.textContent = state.items.length
-    ? `${state.channels.length} 个频道 · ${state.items.length} 个视频`
-    : '搜索后显示频道';
+  setText(treeCount, state.items.length ? '{{channels}} 个频道 · {{videos}} 个视频' : '搜索后显示频道', { channels: state.channels.length, videos: state.items.length });
 
   const allRow = h('div', { class: 'tree-node' },
     h('div', { class: 'tree-row' },
@@ -566,8 +736,8 @@ function renderChannels() {
       'data-channel': channel.name,
       onclick: () => selectChannel(channel.name),
     },
-    h('span', { class: 'tree-avatar' }, initialOf(channel.name)),
-    h('span', { class: 'tree-name' }, channel.name),
+    h('span', { class: 'tree-avatar', translate: 'no' }, initialOf(channel.name)),
+    h('span', { class: 'tree-name', translate: 'no' }, channel.name),
     h('span', { class: 'tree-count' }, String(channel.videos.length)));
     row.append(caret, main);
     node.append(row);
@@ -575,6 +745,7 @@ function renderChannels() {
       node.append(h('div', { class: 'tree-sub' }, channel.videos.map((item) => h('button', {
         class: 'tree-video',
         type: 'button',
+        translate: 'no',
         title: item.title,
         onclick: () => openVideoDetail(item),
       }, item.title))));
@@ -587,11 +758,9 @@ function renderPreviews() {
   const items = state.selectedChannel === 'all'
     ? state.items
     : state.items.filter((item) => channelOf(item) === state.selectedChannel);
-  previewTitle.textContent = state.selectedChannel === 'all' ? '全部频道' : state.selectedChannel;
-  previewSubtitle.textContent = state.items.length
-    ? `${items.length} 个视频 · 搜索“${state.query}”${state.meta?.cached ? ' · 缓存' : ''}`
-    : '输入关键词后展示视频预览';
-  previewSource.textContent = state.meta?.source ? sourceLabel(state.meta.source) : '';
+  setText(previewTitle, state.selectedChannel === 'all' ? '全部频道' : '{{channel}}', { channel: state.selectedChannel });
+  setText(previewSubtitle, state.items.length ? '{{count}} 个视频 · 搜索“{{query}}”{{cached}}' : '输入关键词后展示视频预览', { count: items.length, query: state.query, cached: state.meta?.cached ? msg(' · 缓存') : '' });
+  setText(previewSource, state.meta?.source ? sourceLabel(state.meta.source) : '');
 
   results.replaceChildren();
   if (!state.items.length) {
@@ -608,7 +777,7 @@ function renderPreviews() {
     return;
   }
   if (state.meta?.warning) {
-    results.append(h('div', { class: 'callout warn', style: 'margin-bottom:12px' }, h('span', { html: icon('info', 16) }), h('span', {}, state.meta.warning)));
+    results.append(h('div', { class: 'callout warn', style: 'margin-bottom:12px' }, h('span', { html: icon('info', 16) }), h('span', {}, 'YouTube Data API 不可用，已自动改用网页检索。')));
   }
   if (!items.length) {
     results.append(h('div', { class: 'preview-empty' }, h('div', {}, h('h2', {}, '这个频道暂时没有视频'), h('p', {}, '在左侧选择“全部频道”，或换一个关键词。'))));
@@ -646,8 +815,8 @@ function loadPodcastEpisodes(channel) {
 
 function podcastChannelAvatar(channel, episodes) {
   const image = episodes[0]?.image;
-  if (!image) return h('span', { class: 'podcast-avatar' }, initialOf(channel.name));
-  return h('span', { class: 'podcast-avatar' },
+  if (!image) return h('span', { class: 'podcast-avatar', translate: 'no' }, initialOf(channel.name));
+  return h('span', { class: 'podcast-avatar', translate: 'no' },
     h('img', {
       src: image,
       alt: '',
@@ -671,21 +840,19 @@ async function downloadPodcastLatest(channel) {
     document.body.append(anchor);
     anchor.click();
     anchor.remove();
-    toast(`开始下载：${latest.title}`, 'ok', 2800);
+    toast(msg('开始下载：{{title}}', { title: latest.title }), 'ok', 2800);
   } catch (error) {
-    toast(error.message || '播客下载失败', 'err', 3600);
+    toast(errorMessage(error, '播客下载失败'), 'err', 3600);
   }
 }
 
 function renderPodcastTree() {
   if (state.tab !== 'podcast' || state.view !== 'videos') return;
   channelList.replaceChildren();
-  treeEyebrow.textContent = 'PODCAST CHANNELS';
-  treeTitle.textContent = '播客列表';
+  setText(treeEyebrow, '播客频道');
+  setText(treeTitle, '播客列表');
   const loadedEpisodes = [...podcast.episodes.values()].reduce((total, items) => total + items.length, 0);
-  treeCount.textContent = podcast.channels.length
-    ? `${podcast.channels.length} 个频道 · ${loadedEpisodes || '…'} 集`
-    : podcast.loading ? '正在读取播客频道…' : '暂无播客频道';
+  setText(treeCount, podcast.channels.length ? '{{channels}} 个频道 · {{episodes}} 集' : podcast.loading ? '正在读取播客频道…' : '暂无播客频道', { channels: podcast.channels.length, episodes: loadedEpisodes || '…' });
   if (!podcast.channels.length) {
     channelList.append(h('div', { class: 'tree-empty' }, podcast.loading ? '正在读取播客源…' : '暂时没有可用的播客频道。'));
     return;
@@ -709,13 +876,13 @@ function renderPodcastTree() {
       onclick: () => openPodcastChannel(channel, { selectLatest: true }),
     },
     podcastChannelAvatar(channel, episodes),
-    h('span', { class: 'tree-name' }, channel.name),
+    h('span', { class: 'tree-name', translate: 'no' }, channel.name),
     h('span', { class: 'tree-count podcast-count' }, episodes.length ? String(episodes.length) : '…')));
     row.append(h('button', {
       class: 'tree-download',
       type: 'button',
       title: '下载最新一期',
-      'aria-label': `下载 ${channel.name} 最新一期`,
+      'aria-label': msg('下载 {{channel}} 最新一期', { channel: channel.name }),
       onclick: (event) => {
         event.stopPropagation();
         downloadPodcastLatest(channel);
@@ -726,7 +893,8 @@ function renderPodcastTree() {
       node.append(h('div', { class: 'tree-sub' }, episodes.map((episode) => h('button', {
         class: `tree-video${podcast.selectedEpisode?.id === episode.id ? ' active' : ''}`,
         type: 'button',
-        title: episode.title,
+        translate: 'no',
+        title: msg('{{title}}', { title: episode.title }),
         onclick: () => openPodcastEpisode(channel, episode),
       }, episode.title))));
     }
@@ -760,9 +928,9 @@ async function ensurePodcast() {
   } catch (error) {
     podcast.loading = false;
     podcast.initialized = false;
-    treeCount.textContent = '播客源暂时不可用';
-    channelList.replaceChildren(h('div', { class: 'tree-empty' }, error.message || '无法读取播客频道。'));
-    toast(error.message || '播客源加载失败', 'err', 4200);
+    setText(treeCount, '播客源暂时不可用');
+    channelList.replaceChildren(h('div', { class: 'tree-empty' }, errorMessage(error, '无法读取播客频道。')));
+    toast(errorMessage(error, '播客源加载失败'), 'err', 4200);
   }
 }
 
@@ -774,11 +942,11 @@ async function togglePodcastChannel(channel) {
   }
   podcast.expanded.add(channel.id);
   if (!podcast.episodes.has(channel.id)) {
-    treeCount.textContent = `正在读取 ${channel.name}…`;
+    setText(treeCount, '正在读取 {{channel}}…', { channel: channel.name });
     try {
       await loadPodcastEpisodes(channel);
     } catch (error) {
-      toast(error.message || '播客单集加载失败', 'err', 4200);
+      toast(errorMessage(error, '播客单集加载失败'), 'err', 4200);
     }
   }
   renderPodcastTree();
@@ -788,12 +956,12 @@ async function openPodcastChannel(channel, { selectLatest = false } = {}) {
   podcast.selectedChannel = channel.id;
   if (!podcast.episodes.has(channel.id)) {
     podcast.loading = true;
-    treeCount.textContent = `正在读取 ${channel.name}…`;
+    setText(treeCount, '正在读取 {{channel}}…', { channel: channel.name });
     try {
       await loadPodcastEpisodes(channel);
     } catch (error) {
       podcast.loading = false;
-      toast(error.message || '播客单集加载失败', 'err', 4200);
+      toast(errorMessage(error, '播客单集加载失败'), 'err', 4200);
       renderPodcastTree();
       return;
     }
@@ -809,8 +977,8 @@ async function openPodcastChannel(channel, { selectLatest = false } = {}) {
 }
 
 function setPodcastInfo(channel, episode) {
-  podcastTitle.textContent = episode.title;
-  podcastTitle.title = episode.title;
+  setText(podcastTitle, '{{title}}', { title: episode.title });
+  setI18nAttribute(podcastTitle, 'title', msg('{{title}}', { title: episode.title }));
   podcastCurrent.textContent = '0:00';
   podcastDuration.textContent = episode.duration || '0:00';
   podcast.waveValues = [];
@@ -844,14 +1012,14 @@ function showPodcastDetails() {
     } catch {}
   }
   const metadata = [['频道', channel.name], ['日期', episode.date], ['时长', episode.duration]];
-  document.getElementById('podcast-details-title').textContent = episode.title;
+  setText(document.getElementById('podcast-details-title'), '{{title}}', { title: episode.title });
   document.getElementById('podcast-details-content').replaceChildren(
     h('div', { class: 'podcast-detail-summary' },
-      episode.image ? h('img', { class: 'podcast-detail-cover', src: episode.image, alt: `${channel.name} 封面`, onerror: (event) => { event.target.hidden = true; } }) : null,
-      h('dl', { class: 'podcast-detail-meta' }, metadata.filter(([, value]) => value).map(([label, value]) => h('div', {}, h('dt', {}, label), h('dd', {}, value)))),
+      episode.image ? h('img', { class: 'podcast-detail-cover', src: episode.image, alt: msg('{{channel}} 封面', { channel: channel.name }), onerror: (event) => { event.target.hidden = true; } }) : null,
+      h('dl', { class: 'podcast-detail-meta' }, metadata.filter(([, value]) => value).map(([label, value]) => h('div', {}, h('dt', {}, label), h('dd', { translate: 'no' }, value)))),
     ),
-    episode.subtitle ? h('p', { class: 'podcast-detail-subtitle' }, episode.subtitle) : null,
-    episode.description ? h('p', { class: 'podcast-detail-description' }, episode.description) : null,
+    episode.subtitle ? h('p', { class: 'podcast-detail-subtitle', translate: 'no' }, episode.subtitle) : null,
+    episode.description ? h('p', { class: 'podcast-detail-description', translate: 'no' }, episode.description) : null,
     h('div', { class: 'podcast-detail-links' }, links),
     h('a', {
       class: 'btn btn-soft btn-sm',
@@ -895,7 +1063,7 @@ async function openPodcastEpisode(channel, episode) {
   podcastZh.replaceChildren();
   podcastPosition.textContent = '00 / 00';
   for (const button of [podcastPrev, podcastNext, podcastRepeat]) button.disabled = true;
-  podcastStatus.textContent = '正在加载播客字幕…';
+  setText(podcastStatus, '正在加载播客字幕…');
   podcastTranslate.classList.add('hidden');
   const request = ++podcast.requestSeq;
   try {
@@ -903,20 +1071,20 @@ async function openPodcastEpisode(channel, episode) {
     if (request !== podcast.requestSeq) return;
     podcast.cues = normalizeCues(data.cues || []);
     if (!podcast.cues.length) {
-      podcastStatus.textContent = '这一集没有可用字幕';
+      setText(podcastStatus, '这一集没有可用字幕');
       podcastEn.replaceChildren(h('div', { class: 'podcast-empty' }, '没有读到可用的字幕。'));
       podcastZh.replaceChildren(h('div', { class: 'podcast-empty' }, '换一集试试。'));
       return;
     }
     renderPodcastSubtitles();
-    podcastStatus.textContent = `共 ${podcast.cues.length} 句 · 正在自动翻译中文…`;
+    setText(podcastStatus, '共 {{count}} 句 · 正在自动翻译中文…', { count: podcast.cues.length });
     await translatePodcast();
   } catch (error) {
     if (request !== podcast.requestSeq) return;
-    podcastStatus.textContent = '播客字幕加载失败';
-    podcastEn.replaceChildren(h('div', { class: 'podcast-empty' }, error.message || '无法加载字幕。'));
+    setText(podcastStatus, '播客字幕加载失败');
+    podcastEn.replaceChildren(h('div', { class: 'podcast-empty' }, errorMessage(error, '无法加载字幕。')));
     podcastZh.replaceChildren(h('div', { class: 'podcast-empty' }, '字幕暂时不可用。'));
-    toast(error.message || '播客字幕加载失败', 'err', 4200);
+    toast(errorMessage(error, '播客字幕加载失败'), 'err', 4200);
   }
 }
 
@@ -1005,7 +1173,7 @@ function alignPodcastSubtitleRows() {
     pair.en.style.minHeight = '';
     pair.zh.style.minHeight = '';
   }
-  if (window.matchMedia('(max-width: 600px)').matches) return;
+  if (practiceFor('podcast') || window.matchMedia('(max-width: 600px)').matches) return;
   const heights = podcastCueEls.map((pair) => Math.ceil(Math.max(pair.en.getBoundingClientRect().height, pair.zh.getBoundingClientRect().height)));
   podcastCueEls.forEach((pair, index) => {
     pair.en.style.minHeight = `${heights[index]}px`;
@@ -1025,23 +1193,26 @@ function renderPodcastSubtitles() {
   for (const button of [podcastPrev, podcastNext, podcastRepeat, podcastDownload]) button.disabled = !podcast.cues.length;
 
   podcast.cues.forEach((cue, index) => {
-    const enRow = h('button', {
-      class: 'podcast-cue',
+    const enRow = h('div', { class: 'podcast-cue', onclick: () => playPodcastCue(index) });
+    const content = h('button', {
+      class: 'subtitle-cue-main',
       type: 'button',
-      onclick: () => playPodcastCue(index),
+      onclick: (event) => { event.stopPropagation(); playPodcastCue(index); },
     }, h('span', { class: 'podcast-time' }, formatTimestamp(cue.start)));
     const enLine = h('span', { class: 'podcast-en' });
     const wordNodes = [];
     const words = cue.words?.length ? cue.words : [];
     words.forEach((word, wordIndex) => {
-      const node = h('span', { class: 'word', onclick: (event) => { event.stopPropagation(); playPodcastCue(index, wordIndex); } }, word.text);
+      const node = h('span', { class: 'word', translate: 'no', onclick: (event) => { event.stopPropagation(); playPodcastCue(index, wordIndex); } }, word.text);
       wordNodes.push(node);
       enLine.append(node);
       if (wordIndex < words.length - 1) enLine.append(document.createTextNode(' '));
     });
     if (!words.length) enLine.textContent = cue.en;
-    enRow.append(enLine);
-    if (cue.zh) enRow.append(h('span', { class: 'podcast-inline-zh', lang: 'zh-CN' }, cue.zh));
+    content.append(enLine);
+    if (cue.zh) content.append(h('span', { class: 'podcast-inline-zh', lang: 'zh-CN', translate: 'no' }, cue.zh));
+    const review = createPracticeReview(index);
+    enRow.append(content, review.root);
 
     const zhRow = h('button', {
       class: 'podcast-cue',
@@ -1052,7 +1223,7 @@ function renderPodcastSubtitles() {
     const chars = [];
     if (cue.zh) {
       for (const char of Array.from(cue.zh)) {
-        const span = h('span', { class: 'zh-char' }, char === ' ' ? '\u00a0' : char);
+        const span = h('span', { class: 'zh-char', translate: 'no' }, char === ' ' ? '\u00a0' : char);
         chars.push(span);
         zhLine.append(span);
       }
@@ -1061,7 +1232,7 @@ function renderPodcastSubtitles() {
     }
     zhRow.append(zhLine);
 
-    podcastCueEls.push({ en: enRow, zh: zhRow });
+    podcastCueEls.push({ en: enRow, zh: zhRow, review });
     podcastWordEls.push(wordNodes);
     podcastCharEls.push(chars);
     podcastEn.append(enRow);
@@ -1076,7 +1247,7 @@ async function translatePodcast() {
   if (podcast.translating || !podcast.cues.length) return;
   podcast.translating = true;
   podcastTranslate.classList.add('hidden');
-  podcastStatus.textContent = '正在自动翻译中文字幕…';
+  setText(podcastStatus, '正在自动翻译中文字幕…');
   const request = ++podcast.translateSeq;
   const totalChunks = Math.ceil(podcast.cues.length / 200);
   try {
@@ -1089,7 +1260,7 @@ async function translatePodcast() {
         zh = [];
         for (let index = 0; index < podcast.cues.length; index += 200) {
           const part = podcast.cues.slice(index, index + 200);
-          podcastStatus.textContent = `正在翻译中文字幕 ${Math.floor(index / 200) + 1}/${totalChunks}…`;
+          setText(podcastStatus, '正在翻译中文字幕 {{part}}/{{total}}…', { part: Math.floor(index / 200) + 1, total: totalChunks });
           const data = await translateVideoCaptions(`podcast:${podcast.selectedEpisode.id}`, part, { settings });
           const lines = Array.isArray(data.zh) ? data.zh : [];
           if (lines.length !== part.length) throw new Error('翻译条数不一致');
@@ -1104,7 +1275,7 @@ async function translatePodcast() {
       zh = [];
       for (let index = 0; index < podcast.cues.length; index += 200) {
         const part = podcast.cues.slice(index, index + 200);
-        podcastStatus.textContent = `正在翻译中文字幕 ${Math.floor(index / 200) + 1}/${totalChunks}…`;
+        setText(podcastStatus, '正在翻译中文字幕 {{part}}/{{total}}…', { part: Math.floor(index / 200) + 1, total: totalChunks });
         const data = await translateVideoCaptionsFree(`podcast:${podcast.selectedEpisode.id}`, part);
         const lines = Array.isArray(data.zh) ? data.zh : [];
         if (lines.length !== part.length) throw new Error('翻译条数不一致');
@@ -1115,14 +1286,14 @@ async function translatePodcast() {
     if (!zh.some(Boolean)) throw new Error('翻译结果为空');
     podcast.cues.forEach((cue, index) => { cue.zh = zh[index] || ''; });
     renderPodcastSubtitles();
-    podcastStatus.textContent = `共 ${podcast.cues.length} 句 · 英文逐词 · ${engine === 'ai' ? 'AI 中文字幕' : '自动中文字幕'}`;
+    setText(podcastStatus, '共 {{count}} 句 · 英文逐词 · {{engine}}', { count: podcast.cues.length, engine: msg(engine === 'ai' ? 'AI 中文字幕' : '自动中文字幕') });
     podcastTranslate.classList.add('hidden');
   } catch (error) {
     if (request !== podcast.translateSeq) return;
-    podcastStatus.textContent = '中文自动翻译失败';
+    setText(podcastStatus, '中文自动翻译失败');
     podcastTranslate.classList.remove('hidden');
-    podcastTranslate.textContent = '重试翻译';
-    toast(error.message || '播客字幕翻译失败', 'err', 3600);
+    setText(podcastTranslate, '重试翻译');
+    toast(errorMessage(error, '播客字幕翻译失败'), 'err', 3600);
   } finally {
     if (request === podcast.translateSeq) podcast.translating = false;
   }
@@ -1160,7 +1331,7 @@ podcastAudio.addEventListener('play', () => {
   startPodcastVisual();
 });
 podcastAudio.addEventListener('playing', updatePodcastPlayButton);
-podcastAudio.addEventListener('waiting', () => { podcastAudioState.textContent = '缓冲中'; });
+podcastAudio.addEventListener('waiting', () => { setText(podcastAudioState, '缓冲中'); });
 podcastAudio.addEventListener('pause', () => {
   updatePodcastPlayButton();
   stopPodcastTicker();
@@ -1176,8 +1347,8 @@ podcastAudio.addEventListener('ended', () => {
   syncPodcast();
 });
 podcastAudio.addEventListener('error', () => {
-  podcastStatus.textContent = '音频无法播放，请检查网络或代理';
-  podcastAudioState.textContent = '播放失败';
+  setText(podcastStatus, '音频无法播放，请检查网络或代理');
+  setText(podcastAudioState, '播放失败');
 });
 podcastTranslate.addEventListener('click', translatePodcast);
 podcastDetails.addEventListener('click', showPodcastDetails);
@@ -1204,12 +1375,12 @@ function updatePodcastPlayButton() {
   const paused = reading ? !reading.speech.requested : podcastAudio.paused;
   const label = reading ? paused ? '继续跟读' : '暂停麦克风' : paused ? '播放' : '暂停';
   podcastPlay.innerHTML = icon(paused ? 'play' : 'pause', 18);
-  podcastPlay.setAttribute('aria-label', label);
-  podcastPlay.title = label;
+  setI18nAttribute(podcastPlay, 'aria-label', label);
+  setI18nAttribute(podcastPlay, 'title', label);
   podcastPane.classList.toggle('is-playing', !podcastAudio.paused);
-  podcastAudioState.textContent = !podcast.selectedEpisode ? '尚未选择单集'
+  setText(podcastAudioState, !podcast.selectedEpisode ? '尚未选择单集'
     : podcastAudio.ended ? '播放结束'
-      : podcastAudio.paused ? podcastAudio.currentTime > 0 ? '已暂停' : '待播放' : '正在播放';
+      : podcastAudio.paused ? podcastAudio.currentTime > 0 ? '已暂停' : '待播放' : '正在播放');
 }
 
 const podcastMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -1377,7 +1548,7 @@ async function togglePodcastPlay() {
       await podcast.audioCtx?.resume?.();
       await podcastAudio.play();
     } catch (error) {
-      podcastStatus.textContent = error.message || '音频无法播放';
+      setText(podcastStatus, errorMessage(error, '音频无法播放'));
     }
   } else {
     podcastAudio.pause();
@@ -1485,7 +1656,6 @@ requestAnimationFrame(drawPodcastWave);
 /* ---------- in-pane video detail ---------- */
 
 let youtubeApiPromise = null;
-const DETAIL_WIDTH_KEY = 'enos.detail.left.v1';
 
 function loadYouTubeApi() {
   if (window.YT?.Player) return Promise.resolve(window.YT);
@@ -1575,7 +1745,7 @@ function mountDetailPlayer(item) {
         },
       },
     });
-  }).catch((error) => detailFallbackShow(error.message));
+  }).catch((error) => detailFallbackShow(errorMessage(error)));
 }
 
 function openVideoDetail(item) {
@@ -1592,24 +1762,26 @@ function openVideoDetail(item) {
   detailCueEls = [];
   detailWordEls = [];
   detailCharEls = [];
-  detailTitle.textContent = item.title;
-  detailTitle.title = item.title;
-  detailMeta.textContent = [item.channel, item.duration, item.views, item.published].filter(Boolean).join(' · ');
-  detailMeta.title = detailMeta.textContent;
-  detailStatus.textContent = '正在加载字幕…';
+  setText(detailTitle, '{{title}}', { title: item.title });
+  setI18nAttribute(detailTitle, 'title', msg('{{title}}', { title: item.title }));
+  const metadata = [item.channel, item.duration, item.views, item.published].filter(Boolean).join(' · ');
+  setText(detailMeta, '{{meta}}', { meta: metadata });
+  setI18nAttribute(detailMeta, 'title', msg('{{meta}}', { meta: metadata }));
+  setText(detailStatus, '正在加载字幕…');
   detailTranslate.classList.add('hidden');
   detailEn.replaceChildren();
   detailZh.replaceChildren();
   detail.chat = [];
   detail.chatBusy = false;
   renderTabState();
+  detailWindows ??= new VideoWindowLayout({
+    host: detailBody, element: document.getElementById('detail-window-grid'), status: document.getElementById('detail-layout-status'),
+    onChange: () => { if (practiceFor('detail')) requestAnimationFrame(() => { if (practiceFor('detail')) scrollPracticeWord(practice); }); },
+  });
+  detailWindows.refresh();
   mountDetailPlayer(item);
   loadDetailCaptions(item);
   setupDetailChat(item);
-  try {
-    const saved = Number(localStorage.getItem(DETAIL_WIDTH_KEY));
-    if (Number.isFinite(saved) && saved >= 36 && saved <= 72) detailBody.style.setProperty('--detail-left', `${saved}%`);
-  } catch { /* ignore */ }
 }
 
 function closeVideoDetail({ restore = true } = {}) {
@@ -1631,21 +1803,21 @@ async function loadDetailCaptions(item) {
     detail.loading = false;
     detail.cues = normalizeCues(data.cues || []);
     if (!detail.cues.length) {
-      detailStatus.textContent = '这一集视频没有可用字幕';
+      setText(detailStatus, '这一集视频没有可用字幕');
       detailEn.replaceChildren(h('div', { class: 'podcast-empty' }, data.reason === 'CAPTION_FETCH_FAILED' ? '字幕接口返回空内容。' : '没有读到可用字幕。'));
       detailZh.replaceChildren(h('div', { class: 'podcast-empty' }, '换一个带字幕的视频试试。'));
       return;
     }
     renderDetailSubtitles();
-    detailStatus.textContent = `共 ${detail.cues.length} 句 · 正在自动翻译中文…`;
+    setText(detailStatus, '共 {{count}} 句 · 正在自动翻译中文…', { count: detail.cues.length });
     translateDetail();
   } catch (error) {
     if (request !== detail.requestSeq) return;
     detail.loading = false;
-    detailStatus.textContent = '字幕加载失败';
-    detailEn.replaceChildren(h('div', { class: 'podcast-empty' }, error.message || '无法加载字幕。'));
+    setText(detailStatus, '字幕加载失败');
+    detailEn.replaceChildren(h('div', { class: 'podcast-empty' }, errorMessage(error, '无法加载字幕。')));
     detailZh.replaceChildren(h('div', { class: 'podcast-empty' }, '字幕暂时不可用。'));
-    toast(error.message || '视频字幕加载失败', 'err', 3600);
+    toast(errorMessage(error, '视频字幕加载失败'), 'err', 3600);
   }
 }
 
@@ -1751,20 +1923,23 @@ function renderDetailSubtitles() {
   detail.activeWord = -1;
   detail.activeChars = -1;
 
-  detail.cues.forEach((cue) => {
-    const enRow = h('button', { class: 'detail-cue', type: 'button', onclick: () => seekDetail(cue) },
+  detail.cues.forEach((cue, index) => {
+    const enRow = h('div', { class: 'detail-cue', onclick: () => seekDetail(cue) });
+    const content = h('button', { class: 'subtitle-cue-main', type: 'button', onclick: (event) => { event.stopPropagation(); seekDetail(cue); } },
       h('span', { class: 'detail-time' }, formatTimestamp(cue.start)));
     const enLine = h('span', { class: 'detail-en' });
     const wordNodes = [];
     for (const [wordIndex, word] of (cue.words || []).entries()) {
-      const node = h('span', { class: 'word', onclick: (event) => { event.stopPropagation(); seekDetail(cue, wordIndex); } }, word.text);
+      const node = h('span', { class: 'word', translate: 'no', onclick: (event) => { event.stopPropagation(); seekDetail(cue, wordIndex); } }, word.text);
       wordNodes.push(node);
       enLine.append(node);
       if (wordIndex < cue.words.length - 1) enLine.append(document.createTextNode(' '));
     }
     if (!wordNodes.length) enLine.textContent = cue.en;
-    enRow.append(enLine);
-    if (cue.zh) enRow.append(h('span', { class: 'detail-inline-zh', lang: 'zh-CN' }, cue.zh));
+    content.append(enLine);
+    if (cue.zh) content.append(h('span', { class: 'detail-inline-zh', lang: 'zh-CN', translate: 'no' }, cue.zh));
+    const review = createPracticeReview(index);
+    enRow.append(content, review.root);
 
     const zhRow = h('button', { class: 'detail-cue', type: 'button', onclick: () => seekDetail(cue) },
       h('span', { class: 'detail-time' }, formatTimestamp(cue.start)));
@@ -1772,7 +1947,7 @@ function renderDetailSubtitles() {
     const chars = [];
     if (cue.zh) {
       for (const char of Array.from(cue.zh)) {
-        const span = h('span', { class: 'zh-char' }, char === ' ' ? '\u00a0' : char);
+        const span = h('span', { class: 'zh-char', translate: 'no' }, char === ' ' ? '\u00a0' : char);
         chars.push(span);
         zhLine.append(span);
       }
@@ -1780,7 +1955,7 @@ function renderDetailSubtitles() {
       zhLine.textContent = detail.translating ? '…' : '—';
     }
     zhRow.append(zhLine);
-    detailCueEls.push({ en: enRow, zh: zhRow });
+    detailCueEls.push({ en: enRow, zh: zhRow, review });
     detailWordEls.push(wordNodes);
     detailCharEls.push(chars);
     detailEn.append(enRow);
@@ -1794,7 +1969,7 @@ async function translateDetail() {
   if (detail.translating || !detail.cues.length || !detail.item) return;
   detail.translating = true;
   detailTranslate.classList.add('hidden');
-  detailStatus.textContent = '正在自动翻译中文字幕…';
+  setText(detailStatus, '正在自动翻译中文字幕…');
   const request = ++detail.translateSeq;
   const totalChunks = Math.ceil(detail.cues.length / 200);
   try {
@@ -1807,7 +1982,7 @@ async function translateDetail() {
         zh = [];
         for (let index = 0; index < detail.cues.length; index += 200) {
           const part = detail.cues.slice(index, index + 200);
-          detailStatus.textContent = `正在翻译中文字幕 ${Math.floor(index / 200) + 1}/${totalChunks}…`;
+          setText(detailStatus, '正在翻译中文字幕 {{part}}/{{total}}…', { part: Math.floor(index / 200) + 1, total: totalChunks });
           const data = await translateVideoCaptions(detail.item.id, part, { settings });
           const lines = Array.isArray(data.zh) ? data.zh : [];
           if (lines.length !== part.length) throw new Error('翻译条数不一致');
@@ -1822,7 +1997,7 @@ async function translateDetail() {
       zh = [];
       for (let index = 0; index < detail.cues.length; index += 200) {
         const part = detail.cues.slice(index, index + 200);
-        detailStatus.textContent = `正在翻译中文字幕 ${Math.floor(index / 200) + 1}/${totalChunks}…`;
+        setText(detailStatus, '正在翻译中文字幕 {{part}}/{{total}}…', { part: Math.floor(index / 200) + 1, total: totalChunks });
         const data = await translateVideoCaptionsFree(detail.item.id, part);
         const lines = Array.isArray(data.zh) ? data.zh : [];
         if (lines.length !== part.length) throw new Error('翻译条数不一致');
@@ -1832,13 +2007,13 @@ async function translateDetail() {
     if (request !== detail.translateSeq) return;
     detail.cues.forEach((cue, index) => { cue.zh = zh[index] || ''; });
     renderDetailSubtitles();
-    detailStatus.textContent = `共 ${detail.cues.length} 句 · 英文逐词 · ${engine === 'ai' ? 'AI 中文字幕' : '自动中文字幕'}`;
+    setText(detailStatus, '共 {{count}} 句 · 英文逐词 · {{engine}}', { count: detail.cues.length, engine: msg(engine === 'ai' ? 'AI 中文字幕' : '自动中文字幕') });
   } catch (error) {
     if (request !== detail.translateSeq) return;
-    detailStatus.textContent = '中文自动翻译失败';
+    setText(detailStatus, '中文自动翻译失败');
     detailTranslate.classList.remove('hidden');
-    detailTranslate.textContent = '重试翻译';
-    toast(error.message || '视频字幕翻译失败', 'err', 3600);
+    setText(detailTranslate, '重试翻译');
+    toast(errorMessage(error, '视频字幕翻译失败'), 'err', 3600);
   } finally {
     if (request === detail.translateSeq) detail.translating = false;
   }
@@ -1855,7 +2030,7 @@ function detailChatEmpty() {
 }
 
 function detailAddMessage(role, text, options = {}) {
-  const bubble = h('div', { class: `detail-msg ${role}${options.pending ? ' pending' : ''}${options.error ? ' error' : ''}` }, text);
+  const bubble = h('div', { class: `detail-msg ${role}${options.pending ? ' pending' : ''}${options.error ? ' error' : ''}`, translate: 'no' }, text);
   detailMessages.append(bubble);
   detailMessages.scrollTop = detailMessages.scrollHeight;
   return bubble;
@@ -1866,14 +2041,14 @@ async function setupDetailChat(item) {
   detail.chatAvailable = false;
   detailChatInput.disabled = true;
   detailChatSend.disabled = true;
-  detailChatInput.placeholder = '读取 Agent 状态…';
+  setI18nAttribute(detailChatInput, 'placeholder', '读取 Agent 状态…');
   detailMessages.replaceChildren(h('div', { class: 'detail-empty' }, '正在检查模型配置…'));
   await getHealth(true).catch(() => null);
   if (!state.detailOpen || detail.item?.id !== item.id) return;
   detail.chatAvailable = aiReady(getSettings());
   detailChatInput.disabled = !detail.chatAvailable;
   detailChatSend.disabled = !detail.chatAvailable;
-  detailChatInput.placeholder = detail.chatAvailable ? '问 Agent：解释当前句 / 总结这段视频' : '配置 API Key 后与 Agent 对话';
+  setI18nAttribute(detailChatInput, 'placeholder', detail.chatAvailable ? '问 Agent：解释当前句 / 总结这段视频' : '配置 API Key 后与 Agent 对话');
   detailChatEmpty();
 }
 
@@ -1920,58 +2095,19 @@ async function sendDetailChat(text) {
     });
     if (detail.item?.id !== itemId) return;
     bubble.classList.remove('pending');
-    bubble.textContent = full || '（Agent 没有返回内容）';
+    if (full) bubble.textContent = full;
+    else { bubble.removeAttribute('translate'); setText(bubble, '（Agent 没有返回内容）'); }
     if (full) detail.chat.push({ role: 'assistant', content: full });
   } catch (error) {
     bubble.classList.remove('pending');
     bubble.classList.add('error');
-    bubble.textContent = `请求失败：${error.message || '请稍后重试'}`;
+    bubble.removeAttribute('translate');
+    setText(bubble, '请求失败：{{error}}', { error: errorMessage(error, '请稍后重试') });
   } finally {
     detail.chatBusy = false;
     detailChatSend.disabled = false;
     detailChatInput.focus();
   }
-}
-
-function bindDetailResize() {
-  let ratio = 58;
-  try {
-    const saved = Number(localStorage.getItem(DETAIL_WIDTH_KEY));
-    if (Number.isFinite(saved) && saved >= 36 && saved <= 72) ratio = saved;
-  } catch { /* ignore */ }
-  detailBody.style.setProperty('--detail-left', `${ratio}%`);
-  const apply = (value, save = true) => {
-    ratio = Math.min(72, Math.max(36, value));
-    detailBody.style.setProperty('--detail-left', `${ratio}%`);
-    if (save) {
-      try { localStorage.setItem(DETAIL_WIDTH_KEY, String(Math.round(ratio))); } catch { /* ignore */ }
-    }
-  };
-  detailResize.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const rect = detailBody.getBoundingClientRect();
-    const startX = event.clientX;
-    const startRatio = ratio;
-    let finished = false;
-    try { detailResize.setPointerCapture(event.pointerId); } catch { /* ignore */ }
-    const move = (moveEvent) => {
-      if (moveEvent.cancelable) moveEvent.preventDefault();
-      const next = startRatio + ((moveEvent.clientX - startX) / rect.width) * 100;
-      apply(next, false);
-    };
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      window.removeEventListener('pointermove', move);
-      apply(ratio, true);
-      try { detailResize.releasePointerCapture(event.pointerId); } catch { /* ignore */ }
-    };
-    window.addEventListener('pointermove', move, { passive: false });
-    window.addEventListener('pointerup', finish, { once: true });
-    window.addEventListener('pointercancel', finish, { once: true });
-  });
-  detailResize.addEventListener('dblclick', () => apply(58));
 }
 
 function exportDetailMarkdown() {
@@ -1984,14 +2120,14 @@ function exportDetailMarkdown() {
   const lines = [
     `# ${esc(title)}`,
     '',
-    `- 频道：${esc(detail.item.channel || '—')}`,
-    `- 视频：https://www.youtube.com/watch?v=${detail.item.id}`,
-    `- 时长：${detail.item.duration || '—'}`,
-    `- 导出：${new Date().toISOString().slice(0, 10)} · EnOS`,
+    `- ${t('频道')}：${esc(detail.item.channel || '—')}`,
+    `- ${t('视频')}：https://www.youtube.com/watch?v=${detail.item.id}`,
+    `- ${t('时长')}：${detail.item.duration || '—'}`,
+    `- ${t('导出')}：${new Date().toISOString().slice(0, 10)} · EnOS`,
     '',
-    '## 中英字幕',
+    `## ${t('中英字幕')}`,
     '',
-    '| 时间 | English | 中文 |',
+    `| ${t('时间')} | English | ${t('中文')} |`,
     '| --- | --- | --- |',
     ...detail.cues.map((cue) => `| ${formatTimestamp(cue.start)} | ${esc(cue.en)} | ${esc(cue.zh || '—')} |`),
     '',
@@ -2023,13 +2159,13 @@ detailChatInput.addEventListener('keydown', (event) => {
     detailChatForm.requestSubmit();
   }
 });
-bindDetailResize();
+document.getElementById('detail-layout-reset').addEventListener('click', () => detailWindows?.reset());
 
 function renderLoading() {
-  treeCount.textContent = '正在解析频道…';
+  setText(treeCount, '正在解析频道…');
   channelList.replaceChildren(h('div', { class: 'tree-empty' }, '正在加载频道树…'));
-  previewTitle.textContent = '正在搜索';
-  previewSubtitle.textContent = '读取 YouTube 结果、缩略图与频道信息';
+  setText(previewTitle, '正在搜索');
+  setText(previewSubtitle, '读取 YouTube 结果、缩略图与频道信息');
   previewSource.textContent = '';
   results.replaceChildren(h('div', { class: 'preview-skeleton-grid' },
     Array.from({ length: 4 }, () => h('div', { class: 'skeleton preview-skeleton' })),
@@ -2037,15 +2173,15 @@ function renderLoading() {
 }
 
 function renderError(error, query) {
-  previewTitle.textContent = '搜索没有完成';
-  previewSubtitle.textContent = error.message || '无法连接 YouTube';
+  setText(previewTitle, '搜索没有完成');
+  setText(previewSubtitle, errorMessage(error, '无法连接 YouTube'));
   previewSource.textContent = '';
-  treeCount.textContent = '频道暂时不可用';
+  setText(treeCount, '频道暂时不可用');
   channelList.replaceChildren(h('div', { class: 'tree-empty' }, '搜索失败，频道列表暂时为空。'));
   results.replaceChildren(h('div', { class: 'preview-empty' },
     h('div', {},
       h('h2', {}, '搜索没有完成'),
-      h('p', {}, error.message || '无法连接 YouTube。'),
+      h('p', {}, errorMessage(error, '无法连接 YouTube。')),
       h('div', { class: 'btn-row' },
         h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: () => runSearch(query) }, '重试'),
         h('a', { class: 'btn btn-ghost btn-sm', href: '/videos.html?view=settings', onclick: (event) => {
@@ -2079,14 +2215,14 @@ async function runSearch(rawQuery, { updateUrl = true } = {}) {
     state.loading = false;
     renderChannels();
     renderPreviews();
-    document.title = `${query} · 视频工作台 · EnOS`;
+    setText(document.querySelector('title'), '{{query}} · 视频工作台 · EnOS', { query });
   } catch (error) {
     state.loading = false;
     state.items = [];
     state.channels = [];
     state.meta = { source: '' };
     renderError(error, query);
-    toast(error.message || '搜索失败', 'err', 4200);
+    toast(errorMessage(error, '搜索失败'), 'err', 4200);
   }
 }
 
@@ -2099,7 +2235,7 @@ function renderBooksTree() {
   if (state.tab !== 'books' || state.view !== 'videos') return;
   channelList.replaceChildren();
   const total = bookState.books.length;
-  treeCount.textContent = total ? `${bookState.channels.length} 本外刊 · ${total} 期` : '正在读取目录';
+  setText(treeCount, total ? '{{channels}} 本外刊 · {{issues}} 期' : '正在读取目录', { channels: bookState.channels.length, issues: total });
 
   channelList.append(h('div', { class: 'tree-node' },
     h('div', { class: 'tree-row' },
@@ -2123,7 +2259,7 @@ function renderBooksTree() {
           onclick: () => selectBookCategory(channel.id),
         },
         h('span', { class: 'tree-avatar', style: `background:${channel.accent};color:#fff` }, bookInitials(channel)),
-        h('span', { class: 'tree-name' }, channel.name),
+        h('span', { class: 'tree-name', translate: 'no' }, channel.name),
         h('span', { class: 'tree-count' }, String(channel.count || 0))),
       ),
     ));
@@ -2145,11 +2281,11 @@ function renderBooksGrid() {
   const label = bookState.selectedCategory === 'all'
     ? '全部外刊'
     : bookState.channels.find((channel) => channel.id === bookState.selectedCategory)?.name || '外刊';
-  booksSubtitle.textContent = bookState.loading
+  setText(booksSubtitle, bookState.loading
     ? '正在读取 GitHub 图书目录…'
     : bookState.error
       ? bookState.error
-      : `${label} · ${items.length} 期 · 按最新日期排序`;
+      : msg('{{label}} · {{count}} 期 · 按最新日期排序', { label: msg(label), count: items.length }));
   booksGrid.replaceChildren();
   if (bookState.loading && !all.length) {
     booksGrid.append(h('div', { class: 'books-empty' }, '正在读取 GitHub 目录…'));
@@ -2168,20 +2304,20 @@ function renderBooksGrid() {
       class: 'book-cover',
       style: `background:linear-gradient(145deg, ${book.accent} 0%, #171411 135%)`,
     },
-    h('span', { class: 'book-mag' }, book.short),
-    h('span', { class: 'book-initial' }, bookInitials(book)),
+    h('span', { class: 'book-mag', translate: 'no' }, book.short),
+    h('span', { class: 'book-initial', translate: 'no' }, bookInitials(book)),
     h('span', { class: 'book-date' }, book.date));
     const formats = book.formats.map((format) => h('span', { class: `book-format ${format.format}` }, `${format.format.toUpperCase()}${format.sizeLabel ? ` · ${format.sizeLabel}` : ''}`));
     booksGrid.append(h('button', {
       class: 'book-card',
       type: 'button',
-      title: book.title,
+      title: msg('{{title}}', { title: book.title }),
       onclick: () => openBook(book),
     },
     cover,
     h('div', { class: 'book-card-body' },
-      h('h2', {}, book.title),
-      h('p', { class: 'book-sub' }, `${book.magazine} · ${book.formats.length} 种格式`),
+      h('h2', { translate: 'no' }, book.title),
+      h('p', { class: 'book-sub' }, msg('{{magazine}} · {{count}} 种格式', { magazine: book.magazine, count: book.formats.length })),
       h('div', { class: 'book-formats' }, formats),
       h('span', { class: 'book-read' }, book.readable ? '阅读 EPUB →' : '下载 →'),
     )));
@@ -2201,7 +2337,7 @@ async function ensureBooks() {
     bookState.initialized = true;
     bookState.error = '';
   } catch (error) {
-    bookState.error = error.message || '图书目录加载失败';
+    bookState.error = errorMessage(error, '图书目录加载失败');
     toast(bookState.error, 'err', 4200);
   } finally {
     bookState.loading = false;
@@ -2216,7 +2352,7 @@ function bookDownloadLink(book, format) {
   return h('a', {
     href: bookFileUrl(book.category, book.date, format.format),
     download: `${book.magazine.replace(/[^\w.-]+/g, '_')}_${book.date}.${format.format}`,
-    title: `下载 ${format.format.toUpperCase()}${format.sizeLabel ? ` · ${format.sizeLabel}` : ''}`,
+    title: msg('下载 {{format}}{{size}}', { format: format.format.toUpperCase(), size: format.sizeLabel ? ` · ${format.sizeLabel}` : '' }),
   }, format.format.toUpperCase());
 }
 
@@ -2235,8 +2371,8 @@ function renderBookToc() {
       type: 'button',
       onclick: () => showBookChapter(index),
     },
-    chapter.title,
-    h('small', {}, `${chapter.wordCount.toLocaleString()} words`)));
+    h('span', { translate: 'no' }, chapter.title),
+    h('small', {}, msg('{{count}} 词', { count: chapter.wordCount.toLocaleString() }))));
   });
 }
 
@@ -2246,12 +2382,12 @@ function showBookChapter(index) {
   bookState.active = next;
   const chapter = bookState.chapters[next];
   const article = h('div', { class: 'book-article' },
-    h('p', { class: 'book-chapter-kicker' }, `CHAPTER ${next + 1} / ${bookState.chapters.length} · ${bookState.item?.magazine || ''}`),
-    h('h1', { class: 'book-chapter-title' }, chapter.title),
+    h('p', { class: 'book-chapter-kicker' }, msg('第 {{number}} 章 / {{total}} · {{magazine}}', { number: next + 1, total: bookState.chapters.length, magazine: bookState.item?.magazine || '' })),
+    h('h1', { class: 'book-chapter-title', translate: 'no' }, chapter.title),
     ...chapter.blocks.map((block) => {
-      if (block.type === 'heading') return h('h2', { class: 'book-block heading' }, block.text);
-      if (block.type === 'bullet') return h('p', { class: 'book-block bullet' }, block.text);
-      return h('p', { class: 'book-block' }, block.text);
+      if (block.type === 'heading') return h('h2', { class: 'book-block heading', translate: 'no' }, block.text);
+      if (block.type === 'bullet') return h('p', { class: 'book-block bullet', translate: 'no' }, block.text);
+      return h('p', { class: 'book-block', translate: 'no' }, block.text);
     }),
     h('div', { class: 'book-chapter-nav' },
       h('button', {
@@ -2285,8 +2421,8 @@ async function openBook(book) {
   bookState.active = 0;
   bookState.requestSeq += 1;
   const request = bookState.requestSeq;
-  bookTitle.textContent = book.title;
-  bookMeta.textContent = `${book.magazine} · ${book.date} · 正在下载 EPUB${book.epub?.sizeLabel ? ` (${book.epub.sizeLabel})` : ''}…`;
+  setText(bookTitle, '{{title}}', { title: book.title });
+  setText(bookMeta, '{{magazine}} · {{date}} · 正在下载 EPUB{{size}}…', { magazine: book.magazine, date: book.date, size: book.epub?.sizeLabel ? ` (${book.epub.sizeLabel})` : '' });
   renderBookActions(book);
   bookToc.replaceChildren(h('div', { class: 'books-empty' }, '读取目录…'));
   bookContent.replaceChildren(h('div', { class: 'book-loading' },
@@ -2300,8 +2436,8 @@ async function openBook(book) {
     const parsed = data.book || {};
     bookState.chapters = Array.isArray(data.chapters) ? data.chapters : [];
     bookState.active = 0;
-    bookTitle.textContent = parsed.title || book.title;
-    bookMeta.textContent = `${parsed.magazine || book.magazine} · ${parsed.date || book.date} · ${bookState.chapters.length} 章 · ${(parsed.wordCount || 0).toLocaleString()} words`;
+    setText(bookTitle, '{{title}}', { title: parsed.title || book.title });
+    setText(bookMeta, '{{magazine}} · {{date}} · {{chapters}} 章 · {{words}} 词', { magazine: parsed.magazine || book.magazine, date: parsed.date || book.date, chapters: bookState.chapters.length, words: new Intl.NumberFormat(getLocale()).format(parsed.wordCount || 0) });
     renderBookActions(book);
     if (!bookState.chapters.length) throw new Error('这本书没有可阅读章节');
     showBookChapter(0);
@@ -2311,7 +2447,7 @@ async function openBook(book) {
     bookToc.replaceChildren();
     bookContent.replaceChildren(h('div', { class: 'book-error' },
       h('strong', {}, '这本外刊暂时打不开'),
-      h('p', {}, error.message || 'EPUB 解析失败，可以先下载到本地阅读。'),
+      h('p', {}, errorMessage(error, 'EPUB 解析失败，可以先下载到本地阅读。')),
     ));
   }
 }
@@ -2353,8 +2489,8 @@ function renderTabState() {
   booksPane.classList.toggle('hidden', !(showMedia && booksTab && !showBookReader));
   bookReader.classList.toggle('hidden', !showBookReader);
   if (showMedia) {
-    treeEyebrow.textContent = youtube ? 'CHANNELS' : booksTab ? 'LIBRARY' : 'PODCAST CHANNELS';
-    treeTitle.textContent = youtube ? '频道' : booksTab ? '外刊' : '播客频道';
+    setText(treeEyebrow, youtube ? '频道' : booksTab ? '图书列表' : '播客频道');
+    setText(treeTitle, youtube ? '频道' : booksTab ? '外刊' : '播客频道');
     if (youtube) renderChannels();
     else if (booksTab) renderBooksTree();
     else renderPodcastTree();
@@ -2380,7 +2516,7 @@ async function ensureStudioSettings() {
   } catch (error) {
     settingsReady = false;
     settingsView.replaceChildren(h('div', { class: 'settings-loading' },
-      h('p', {}, error.message || '设置加载失败'),
+      h('p', {}, errorMessage(error, '设置加载失败')),
       h('button', { class: 'btn btn-soft', type: 'button', onclick: ensureStudioSettings }, '重试'),
     ));
   }
@@ -2442,6 +2578,16 @@ function setTab(tab) {
 
 /* ---------- events + boot ---------- */
 
+bindFullscreen(document.getElementById('studio-fullscreen'), document.documentElement, () => {
+  toast('浏览器未能切换全屏，请重试。', 'err');
+});
+
+window.addEventListener('enos:locale', () => {
+  updatePodcastPlayButton();
+  updatePracticeControls();
+  if (practice) renderPractice(practice);
+});
+
 form.addEventListener('submit', (event) => {
   event.preventDefault();
   runSearch();
@@ -2471,6 +2617,7 @@ channelList.addEventListener('click', (event) => {
 });
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
+    document.getElementById('studio-language-menu').open = false;
     document.getElementById('podcast-sync-settings').open = false;
     if (compactViewport.matches && !state.treeCollapsed) {
       setTreeCollapsed(true);
@@ -2485,7 +2632,12 @@ if ('ResizeObserver' in window) {
   practiceResize.observe(podcastEn);
 }
 window.addEventListener('pagehide', () => stopPractice({ resume: false }));
-document.addEventListener('visibilitychange', () => { if (document.hidden && practice) practice.speech.pause(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && practice) {
+    cancelPracticePronunciation(practice);
+    practice.speech.pause();
+  }
+});
 podcastAudio.addEventListener('volumechange', () => { if (practiceFor('podcast') && !podcastAudio.muted) podcastAudio.muted = true; });
 
 try { state.treeCollapsed = localStorage.getItem(TREE_KEY) === '1'; } catch { /* ignore */ }
@@ -2521,7 +2673,7 @@ if (params.get('debug') === '1') {
       podcast.cues = normalizeCues(data.cues || []);
       setTab('podcast');
       renderPodcastSubtitles();
-      podcastStatus.textContent = `共 ${podcast.cues.length} 句 · 双语字幕`;
+      setText(podcastStatus, '共 {{count}} 句 · 双语字幕', { count: podcast.cues.length });
     },
     get podcastState() {
       return { activeCue: podcast.activeCue, activeWord: podcast.activeWord, offset: podcast.offset, follow: podcast.follow };

@@ -18,6 +18,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "get-youtube-transcript": "^1.0.0"
+    "get-youtube-transcript": "^1.0.0",
+    "gridstack": "^14.0.0",
+    "i18next": "^26.5.12"
   }
 }

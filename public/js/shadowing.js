@@ -1,3 +1,5 @@
+import { msg, t } from './i18n.js';
+
 const SMALL_NUMBERS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
 const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
 const CONTRACTIONS = new Map([
@@ -32,6 +34,122 @@ function timedWords(cue) {
   }));
 }
 
+export function describeShadowingAttempt(cue, { matched = [], startWordIndex = 0, status = 'active' } = {}) {
+  const words = timedWords(cue).map((word, wordIndex) => ({ ...word, wordIndex }))
+    .filter((word) => word.wordIndex >= startWordIndex && speechTokens(word.text).length);
+  const aligned = new Set(matched);
+  const matchedWords = words.filter((word) => aligned.has(word.wordIndex)).length;
+  const completed = status !== 'active';
+  const checkedThrough = completed ? Infinity : Math.max(startWordIndex - 1, ...aligned);
+  const missing = words.filter((word) => word.wordIndex <= checkedThrough && !aligned.has(word.wordIndex));
+  const missingWords = missing.map((word) => word.text.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, ''));
+  const missingWordIndexes = missing.map((word) => word.wordIndex);
+  const totalWords = words.length;
+  let summaryMessage = matchedWords ? msg('已对齐 {{matched}}/{{total}} 词', { matched: matchedWords, total: totalWords }) : msg('尚未对齐');
+  let adviceMessage = msg('从「{{word}}」开始，放慢一点再读。', { word: words[0]?.text || '' });
+  if (missingWords.length) adviceMessage = msg('「{{words}}」未对齐，下一遍单独读清后再连起来。', { words: missingWords.slice(0, 3).join(' / ') });
+  else if (matchedWords === totalWords && totalWords) {
+    summaryMessage = msg(startWordIndex > 0 ? '本段已对齐' : '整句已对齐');
+    adviceMessage = msg('保持当前节奏，句末留出自然停顿。');
+  } else if (matchedWords) adviceMessage = msg('保持当前节奏，继续读下一词。');
+  if (!totalWords) { summaryMessage = msg('无可点评字幕'); adviceMessage = msg(''); }
+  return {
+    status, summary: t(summaryMessage.i18nKey, summaryMessage.values), advice: t(adviceMessage.i18nKey, adviceMessage.values),
+    summaryMessage, adviceMessage, matchedWords, totalWords,
+    coverage: totalWords ? matchedWords / totalWords : 0, missingWords, missingWordIndexes,
+  };
+}
+
+export class ShadowingReviewLog {
+  constructor(cues = [], records = []) {
+    this.cues = cues;
+    this.history = new Map();
+    this.pass = new Map();
+    for (const record of (Array.isArray(records) ? records : []).slice(-2000)) {
+      const cue = cues[record?.cueIndex];
+      if (!cue || record.en !== cue.en || !Number.isInteger(record.number) || record.number < 1) continue;
+      const wordCount = timedWords(cue).length;
+      const matched = (Array.isArray(record.matched) ? record.matched : [])
+        .filter((wordIndex) => Number.isInteger(wordIndex) && wordIndex >= 0 && wordIndex < wordCount);
+      const items = this.history.get(record.cueIndex) || [];
+      items.push({
+        cueIndex: record.cueIndex, number: record.number,
+        startWordIndex: Math.max(0, Math.min(wordCount - 1, Number(record.startWordIndex) || 0)),
+        matched: new Set(matched), status: record.status === 'complete' ? 'complete' : 'stopped',
+        updatedAt: Number.isFinite(record.updatedAt) ? record.updatedAt : 0,
+      });
+      this.history.set(record.cueIndex, items.slice(-20));
+    }
+    this.begin(0);
+  }
+
+  begin(cueIndex, wordIndex = 0) {
+    this.finish();
+    this.anchorCue = cueIndex;
+    this.anchorWord = wordIndex;
+    this.pass = new Map();
+    this.lastTranscript = '';
+    this.lastMatchedSize = -1;
+  }
+
+  attempt(cueIndex, now) {
+    if (!this.cues[cueIndex]) return null;
+    if (this.pass.has(cueIndex)) return this.pass.get(cueIndex);
+    const items = this.history.get(cueIndex) || [];
+    const record = {
+      cueIndex, number: (items.at(-1)?.number || 0) + 1,
+      startWordIndex: cueIndex === this.anchorCue ? this.anchorWord : 0,
+      matched: new Set(), status: 'active', updatedAt: now,
+    };
+    items.push(record);
+    this.history.set(cueIndex, items.slice(-20));
+    this.pass.set(cueIndex, record);
+    return record;
+  }
+
+  record(position, matched, now = Date.now()) {
+    if (!position.transcript || position.transcript === this.lastTranscript && matched.size === this.lastMatchedSize) return;
+    this.lastTranscript = position.transcript;
+    this.lastMatchedSize = matched.size;
+    this.attempt(this.anchorCue, now);
+    for (const key of matched) {
+      const [cueIndex, wordIndex] = key.split(':').map(Number);
+      if (cueIndex < this.anchorCue || cueIndex === this.anchorCue && wordIndex < this.anchorWord) continue;
+      const record = this.attempt(cueIndex, now);
+      if (!record) continue;
+      if (!record.matched.has(wordIndex)) {
+        record.matched.add(wordIndex);
+        record.updatedAt = now;
+      }
+    }
+    for (const record of this.pass.values()) {
+      if (record.cueIndex < position.cueIndex || position.done
+        || position.nextCueIndex > record.cueIndex && position.cueIndex >= record.cueIndex) record.status = 'complete';
+    }
+  }
+
+  finish() {
+    for (const record of this.pass.values()) {
+      if (record.status === 'active') record.status = 'stopped';
+    }
+  }
+
+  reviews(cueIndex) {
+    const cue = this.cues[cueIndex];
+    if (!cue) return [];
+    return (this.history.get(cueIndex) || []).map((record) => ({
+      ...describeShadowingAttempt(cue, { ...record, matched: record.matched }),
+      number: record.number, updatedAt: record.updatedAt,
+    }));
+  }
+
+  export() {
+    return Array.from(this.history.values()).flat().map((record) => ({
+      ...record, en: this.cues[record.cueIndex].en, matched: Array.from(record.matched).sort((left, right) => left - right),
+    })).sort((left, right) => left.updatedAt - right.updatedAt).slice(-2000);
+  }
+}
+
 function referenceWords(cues) {
   return cues.flatMap((cue, cueIndex) => {
     return cue.words.flatMap((word, wordIndex) => speechTokens(word.text).map((token) => ({
@@ -61,6 +179,13 @@ export class ShadowingTracker {
   constructor(cues = []) {
     this.cues = cues.map((cue) => cue.words?.length ? cue : { ...cue, words: timedWords(cue) });
     this.tokens = referenceWords(this.cues);
+    this.wordTokens = new Map();
+    this.tokens.forEach((word, tokenIndex) => {
+      const key = `${word.cueIndex}:${word.wordIndex}`;
+      const indexes = this.wordTokens.get(key) || [];
+      indexes.push(tokenIndex);
+      this.wordTokens.set(key, indexes);
+    });
     this.seek(0);
   }
 
@@ -71,6 +196,8 @@ export class ShadowingTracker {
     this.cursor = this.anchor;
     this.segments = new Map();
     this.matched = new Set();
+    this.matchedTokens = new Set();
+    this.alignedWords = new Set();
     this.transcript = '';
     this.firstMatch = null;
     this.lastMatch = null;
@@ -97,7 +224,10 @@ export class ShadowingTracker {
     segment.final = final;
     for (const index of best.matched) {
       const word = this.tokens[index];
-      this.matched.add(`${word.cueIndex}:${word.wordIndex}`);
+      const key = `${word.cueIndex}:${word.wordIndex}`;
+      this.matched.add(key);
+      this.matchedTokens.add(index);
+      if (this.wordTokens.get(key).every((tokenIndex) => this.matchedTokens.has(tokenIndex))) this.alignedWords.add(key);
     }
     if (this.cursor > previous) {
       this.firstMatch ??= now;
@@ -156,6 +286,8 @@ export class SpeechSession {
     this.recognition = null;
     this.closing = null;
     this.releaseTimer = null;
+    this.releaseWaiters = new Set();
+    this.releaseConfirmed = true;
     this.timer = null;
     this.generation = 0;
     this.retries = 0;
@@ -188,6 +320,7 @@ export class SpeechSession {
     try {
       recognition = new this.Recognition();
       this.recognition = recognition;
+      this.releaseConfirmed = true;
       recognition.lang = this.lang;
       recognition.continuous = true;
       recognition.interimResults = true;
@@ -252,12 +385,16 @@ export class SpeechSession {
     for (const event of ['onstart', 'onspeechstart', 'onspeechend', 'onresult', 'onerror', 'onend']) recognition[event] = null;
     if (ended) return;
     this.closing = recognition;
+    this.releaseConfirmed = false;
     const release = (confirmed = true) => {
       if (this.closing !== recognition) return;
       this.clearTimer(this.releaseTimer);
       this.releaseTimer = null;
       this.closing = null;
+      this.releaseConfirmed = confirmed;
       recognition.onend = null;
+      for (const resolve of this.releaseWaiters) resolve(confirmed);
+      this.releaseWaiters.clear();
       if (!this.requested) return;
       if (confirmed) this.open();
       else {
@@ -277,6 +414,11 @@ export class SpeechSession {
     this.detach();
     this.onSpeech(false);
     this.emit('paused');
+  }
+
+  whenReleased() {
+    if (!this.closing) return Promise.resolve(!this.recognition && this.releaseConfirmed);
+    return new Promise((resolve) => this.releaseWaiters.add(resolve));
   }
 
   restart() {

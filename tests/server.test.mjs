@@ -106,6 +106,30 @@ test('health exposes providers without leaking keys', async () => {
   assert.ok(data.providers.every((provider) => !('apiKey' in provider)));
 });
 
+test('pronunciation lookup uses offline IPA data and retains alternative readings', async () => {
+  const response = await fetch(`${BASE}/api/pronunciation?word=Should.`);
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.equal(data.word, 'should');
+  assert.equal(data.accent, 'en-US');
+  assert.ok(data.ipa[0].includes('\u0283'));
+  const alternatives = await (await fetch(`${BASE}/api/pronunciation?word=read`)).json();
+  assert.equal(alternatives.ipa.length, 2);
+  const number = await (await fetch(`${BASE}/api/pronunciation?word=24`)).json();
+  assert.equal(number.ipa.length, 1);
+  const unknown = await (await fetch(`${BASE}/api/pronunciation?word=notarealwordfixture`)).json();
+  assert.deepEqual(unknown.ipa, []);
+});
+
+test('pronunciation accepts only bounded words and never arbitrary remote URLs', async () => {
+  for (const word of ['', 'https://example.com/audio', 'word'.repeat(50)]) {
+    const response = await fetch(`${BASE}/api/pronunciation?word=${encodeURIComponent(word)}`);
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, 'BAD_WORD');
+  }
+  assert.equal((await post('/api/pronunciation', { word: 'should' })).status, 405);
+});
+
 test('workspace homepage and CSP are served without retired views', async () => {
   const response = await fetch(`${BASE}/`);
   assert.equal(response.status, 200);

@@ -54,3 +54,17 @@ test('clearing removes application preferences and old data without touching oth
   assert.deepEqual([...storage], [['unrelated-app', 'keep']]);
   assert.deepEqual(getSettings(), DEFAULT_SETTINGS);
 });
+
+test('interface language defaults to Chinese, persists English and rejects unsupported values', () => {
+  assert.equal(getSettings().locale, 'zh-CN');
+  saveSettings({ locale: 'en' });
+  assert.equal(getSettings().locale, 'en');
+  assert.equal(JSON.parse(storage.get('enos.settings.v1')).locale, 'en');
+  for (const locale of ['fr', null, {}, 'en-US']) {
+    saveSettings({ locale });
+    assert.equal(getSettings().locale, 'zh-CN');
+  }
+  saveSettings({ locale: 'en' });
+  resetSettings();
+  assert.equal(getSettings().locale, 'zh-CN');
+});

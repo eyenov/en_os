@@ -1,4 +1,5 @@
 const SETTINGS_KEY = 'enos.settings.v1';
+const SHADOWING_KEY = 'enos.shadowing.reviews.v1';
 const PROVIDER_IDS = new Set(['deepseek', 'kimi', 'zhipu', 'mimo', 'custom']);
 
 const memory = new Map();
@@ -25,6 +26,7 @@ function write(key, value) {
 }
 
 export const DEFAULT_SETTINGS = Object.freeze({
+  locale: 'zh-CN',
   provider: 'deepseek',
   keys: Object.freeze({}),
   baseUrls: Object.freeze({}),
@@ -43,6 +45,7 @@ function stringMap(value) {
 function normalizeSettings(value) {
   const stored = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   return {
+    locale: stored.locale === 'en' ? 'en' : DEFAULT_SETTINGS.locale,
     provider: PROVIDER_IDS.has(stored.provider) ? stored.provider : DEFAULT_SETTINGS.provider,
     keys: stringMap(stored.keys),
     baseUrls: stringMap(stored.baseUrls),
@@ -76,6 +79,23 @@ export function resetSettings() {
   settingsCache = normalizeSettings(DEFAULT_SETTINGS);
   write(SETTINGS_KEY, settingsCache);
   window.dispatchEvent(new CustomEvent('enos:settings'));
+}
+
+function shadowingMedia() {
+  const stored = memory.has(SHADOWING_KEY) ? memory.get(SHADOWING_KEY) : read(SHADOWING_KEY, []);
+  return (Array.isArray(stored) ? stored : []).filter((entry) => entry && typeof entry.id === 'string'
+    && entry.id.length <= 400 && Array.isArray(entry.records)).slice(-16);
+}
+
+export function getShadowingReviews(mediaId) {
+  return shadowingMedia().find((entry) => entry.id === mediaId)?.records.slice(-1000) || [];
+}
+
+export function saveShadowingReviews(mediaId, records) {
+  if (typeof mediaId !== 'string' || !mediaId || mediaId.length > 400 || !Array.isArray(records)) return false;
+  const entries = shadowingMedia().filter((entry) => entry.id !== mediaId);
+  entries.push({ id: mediaId, records: records.slice(-1000) });
+  return write(SHADOWING_KEY, entries.slice(-16));
 }
 
 export function clearAllData() {

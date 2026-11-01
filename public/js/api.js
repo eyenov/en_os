@@ -1,12 +1,72 @@
 import { getSettings } from './store.js';
+import { msg } from './i18n.js';
+
+const ERROR_MESSAGES = {
+  BAD_QUERY: '请输入至少 2 个字符的关键词。',
+  BAD_VIDEO_ID: '视频 ID 不合法。',
+  YOUTUBE_SEARCH_FAILED: 'YouTube 搜索失败。可在设置中配置 YouTube Data API Key。',
+  YOUTUBE_PAGE_FAILED: '无法打开 YouTube 视频页。',
+  NO_KEY: '还没有配置 API Key。请在设置中配置模型服务。',
+  NO_STREAM: '浏览器不支持流式响应。',
+  BAD_BASE_URL: 'Base URL 无效，请使用 HTTPS 地址（本地调试可用 HTTP），且不要包含凭据、查询参数或片段。',
+  BAD_PROVIDER: '未知的模型服务商。',
+  KEY_SCOPE: '环境密钥只能用于服务端配置的 Base URL。',
+  NO_MODEL: '缺少模型名称。',
+  BAD_MESSAGES: '对话内容不合法。',
+  TOO_LONG: '上下文过长。',
+  TIMEOUT: '上游请求超时或被取消。',
+  NETWORK: '无法连接上游服务，请检查网络和 Base URL。',
+  BAD_KEY: '上游服务拒绝了 API Key，请检查密钥。',
+  RATE_LIMIT: '请求太频繁，请稍后再试。',
+  UPSTREAM_ERROR: '上游服务返回错误，请检查模型名称和服务配置。',
+  EMPTY_CONTENT: '上游返回了空内容。',
+  BAD_CUES: '没有需要翻译的字幕。',
+  BAD_TRANSLATION: '模型返回的字幕条数不一致，请重试。',
+  FREE_TRANSLATE_FAILED: '自动翻译暂时不可用，请稍后重试。',
+  BOOK_CATALOG_FAILED: '图书目录加载失败',
+  BOOK_BAD_EPUB: 'EPUB 已损坏或无法安全解压。',
+  BOOK_EMPTY: 'EPUB 中未找到可阅读章节。',
+  BOOK_BAD_REQUEST: '图书参数不正确。',
+  BOOK_NOT_FOUND: '没有找到这本书。',
+  BOOK_NO_EPUB: '这本书没有 EPUB 版本，无法在线阅读。',
+  BOOK_DOWNLOAD_FAILED: '图书下载失败，请检查网络。',
+  BOOK_FORMAT_NOT_FOUND: '没有这种图书格式。',
+  PODCAST_BAD_URL: '播客资源地址无效或不受信任。',
+  PODCAST_REDIRECT: '播客资源重定向过多。',
+  PODCAST_FEED_FAILED: '播客源加载失败',
+  PODCAST_CHANNEL_NOT_FOUND: '播客频道不存在。',
+  PODCAST_TRANSCRIPT_FAILED: '播客字幕加载失败',
+  EMPTY_PODCAST_TRANSCRIPT: '字幕文件没有可用的时间轴。',
+  PODCAST_EPISODE_NOT_FOUND: '播客单集不存在。',
+  PODCAST_AUDIO_FAILED: '音频无法播放，请检查网络或代理',
+  BAD_RANGE: '只支持单段字节范围。',
+  BAD_WORD: '单词不合法。',
+  RESOURCE_TOO_LARGE: '远程资源超过允许的大小。',
+  UNSUPPORTED_MEDIA_TYPE: '请求体必须使用 application/json。',
+  BODY_TOO_LARGE: '请求体过大。',
+  BAD_BODY: '请求体必须是 JSON 对象。',
+  BAD_JSON: '请求体不是合法 JSON。',
+  FORBIDDEN: '不允许访问该路径。',
+  BAD_HOST: '主机地址不受信任。',
+  BAD_ORIGIN: '跨站请求被拒绝。',
+  BAD_PATH: 'URL 路径不合法。',
+  METHOD_NOT_ALLOWED: '请求方法不受支持。',
+  NOT_FOUND: '接口不存在。',
+  INTERNAL: '服务暂时不可用，请稍后重试。',
+};
 
 export class ApiError extends Error {
-  constructor(message, code = 'API_ERROR', status = 0) {
+  constructor(message, code = 'API_ERROR', status = 0, displayMessage = null) {
     super(message);
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
+    this.displayMessage = displayMessage || msg(ERROR_MESSAGES[code] || message);
   }
+}
+
+export function errorMessage(error, fallback = '请稍后重试') {
+  return error?.displayMessage || msg(error?.message || fallback);
 }
 
 export const FALLBACK_PROVIDERS = [
@@ -71,7 +131,7 @@ export function configFor(settings = getSettings()) {
 
 async function parseError(response) {
   let code = 'API_ERROR';
-  let message = `请求失败（${response.status}）`;
+  let message = '';
   try {
     const data = await response.json();
     if (data?.error) {
@@ -81,7 +141,29 @@ async function parseError(response) {
   } catch {
     /* ignore */
   }
-  return new ApiError(message, code, response.status);
+  return new ApiError(message || `请求失败（${response.status}）`, code, response.status,
+    message ? null : msg('请求失败（{{status}}）', { status: response.status }));
+}
+
+const pronunciationCache = new Map();
+
+export function getWordPronunciation(text) {
+  const word = String(text || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u2018\u2019]/g, "'").replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '').toLowerCase();
+  if (!/^[a-z0-9]+(?:['-][a-z0-9]+)*$/.test(word) || word.length > 80) return Promise.resolve({ word, ipa: [] });
+  if (pronunciationCache.has(word)) return pronunciationCache.get(word);
+  const request = fetch(`/api/pronunciation?word=${encodeURIComponent(word)}`, {
+    headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000),
+  }).then(async (response) => {
+    if (!response.ok) throw await parseError(response);
+    return response.json();
+  }).catch((error) => {
+    pronunciationCache.delete(word);
+    throw error;
+  });
+  pronunciationCache.set(word, request);
+  if (pronunciationCache.size > 1000) pronunciationCache.delete(pronunciationCache.keys().next().value);
+  return request;
 }
 
 export async function chat({ messages, json = false, maxTokens = 1400, temperature = 0.7, signal, settings = getSettings() } = {}) {
