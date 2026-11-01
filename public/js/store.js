@@ -26,6 +26,7 @@ function write(key, value) {
 }
 
 export const DEFAULT_SETTINGS = Object.freeze({
+  locale: 'zh-CN',
   provider: 'deepseek',
   keys: Object.freeze({}),
   baseUrls: Object.freeze({}),
@@ -44,6 +45,7 @@ function stringMap(value) {
 function normalizeSettings(value) {
   const stored = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   return {
+    locale: stored.locale === 'en' ? 'en' : DEFAULT_SETTINGS.locale,
     provider: PROVIDER_IDS.has(stored.provider) ? stored.provider : DEFAULT_SETTINGS.provider,
     keys: stringMap(stored.keys),
     baseUrls: stringMap(stored.baseUrls),

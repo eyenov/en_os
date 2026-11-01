@@ -10,6 +10,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png?v=knowledge-k" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=knowledge-k" />
   <link rel="stylesheet" href="/css/base.css" />
+  <link rel="stylesheet" href="/css/gridstack.min.css" />
   <link rel="stylesheet" href="/css/studio.css" />
 </head>
 <body class="studio-body">
@@ -24,6 +25,11 @@
         </div>
         <button class="rail-btn tree-open-btn hidden" id="tree-open" type="button" aria-label="打开频道导航" aria-controls="channel-tree" aria-expanded="false" title="打开频道导航"><span data-icon="chevronRight"></span><span>频道</span></button>
       </nav>
+      <button class="rail-btn rail-fullscreen" id="studio-fullscreen" type="button" title="进入全屏" aria-label="进入全屏" aria-pressed="false"><span data-icon="maximize"></span></button>
+      <details class="rail-language" id="studio-language-menu">
+        <summary class="rail-btn" title="界面语言" aria-label="界面语言"><span data-icon="globe"></span></summary>
+        <div class="rail-language-popover"><label class="sr-only" for="studio-language">界面语言</label><select class="input" id="studio-language" data-locale-select><option value="zh-CN" translate="no">中文</option><option value="en" translate="no">English</option></select></div>
+      </details>
       <button class="rail-btn rail-settings" id="rail-settings" type="button" title="设置" aria-label="设置"><span data-icon="settings"></span><span>设置</span></button>
     </aside>
 
@@ -32,7 +38,7 @@
         <aside class="channel-tree" id="channel-tree" aria-label="频道与内容导航">
           <div class="tree-head">
             <div>
-              <p class="eyebrow" id="tree-eyebrow">CHANNELS</p>
+              <p class="eyebrow" id="tree-eyebrow">频道</p>
               <h2 id="tree-title">频道</h2>
               <p id="tree-count">搜索后显示频道</p>
             </div>
@@ -122,35 +128,50 @@
             <button class="btn btn-soft btn-sm hidden" id="detail-translate" type="button" title="重试翻译" aria-label="重试翻译"><span data-icon="refresh"></span><span class="detail-button-label">重试翻译</span></button>
             <button class="btn btn-soft btn-sm shadowing-toggle" id="detail-shadowing" type="button" title="开始语音跟读" aria-label="语音跟读" aria-pressed="false" disabled><span data-icon="mic"></span><span class="detail-button-label">跟读</span></button>
             <button class="btn btn-ghost btn-sm detail-export" id="detail-export" type="button" title="导出字幕" aria-label="导出字幕"><span data-icon="download"></span><span class="detail-button-label">导出字幕</span></button>
+            <button class="btn btn-ghost btn-sm" id="detail-layout-reset" type="button" title="重置窗口布局" aria-label="重置窗口布局"><span data-icon="refresh"></span></button>
           </div>
           <div class="shadowing-bar hidden" id="detail-shadowing-bar" aria-label="视频跟读"></div>
           <div class="detail-body" id="detail-body">
-            <div class="detail-left" id="detail-left">
-              <div class="detail-player-shell">
-                <div id="detail-player" class="detail-player-mount"></div>
-                <div id="detail-fallback" class="detail-fallback hidden"></div>
-                <span class="detail-silent-badge" aria-hidden="true">原声静音</span>
-              </div>
-              <div class="detail-agent" id="detail-agent">
-                <div class="detail-messages" id="detail-messages" aria-live="polite"></div>
-                <form class="detail-chat-form" id="detail-chat-form">
-                  <textarea id="detail-chat-input" rows="2" maxlength="2000" placeholder="问 Agent：解释当前句 / 总结这段视频"></textarea>
-                  <button class="btn btn-primary" id="detail-chat-send" type="submit" title="发送" aria-label="发送"><span data-icon="send"></span></button>
-                </form>
-              </div>
-            </div>
-            <button class="detail-resize" id="detail-resize" type="button" title="拖动调整视频宽度 · 双击重置" aria-label="拖动调整视频宽度"></button>
-            <div class="detail-right">
-              <div class="detail-sub-columns">
-                <div class="detail-sub-col" role="region" aria-label="英文字幕">
+            <div class="grid-stack detail-window-grid" id="detail-window-grid">
+              <section class="grid-stack-item detail-panel" data-panel="video" gs-id="video" gs-x="0" gs-y="0" gs-w="6" gs-h="5" aria-label="视频窗口">
+                <div class="grid-stack-item-content detail-panel-surface">
+                  <div class="detail-panel-head"><button class="detail-panel-handle" type="button" title="拖动视频窗口；方向键移动，Shift + 方向键缩放" aria-label="移动视频窗口"><span data-icon="target"></span></button></div>
+                  <div class="detail-video-slot">
+                    <div class="detail-player-shell">
+                      <div id="detail-player" class="detail-player-mount"></div>
+                      <div id="detail-fallback" class="detail-fallback hidden"></div>
+                      <span class="detail-silent-badge" aria-hidden="true">原声静音</span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+              <section class="grid-stack-item detail-panel" data-panel="agent" gs-id="agent" gs-x="0" gs-y="5" gs-w="6" gs-h="7" aria-label="Agent 对话窗口">
+                <div class="grid-stack-item-content detail-panel-surface">
+                  <div class="detail-panel-head"><button class="detail-panel-handle" type="button" title="拖动 Agent 窗口；方向键移动，Shift + 方向键缩放" aria-label="移动 Agent 窗口"><span data-icon="target"></span></button></div>
+                  <div class="detail-agent" id="detail-agent">
+                    <div class="detail-messages" id="detail-messages" aria-live="polite"></div>
+                    <form class="detail-chat-form" id="detail-chat-form">
+                      <textarea id="detail-chat-input" rows="2" maxlength="2000" placeholder="问 Agent：解释当前句 / 总结这段视频"></textarea>
+                      <button class="btn btn-primary" id="detail-chat-send" type="submit" title="发送" aria-label="发送"><span data-icon="send"></span></button>
+                    </form>
+                  </div>
+                </div>
+              </section>
+              <section class="grid-stack-item detail-panel" data-panel="en" gs-id="en" gs-x="6" gs-y="0" gs-w="3" gs-h="12" aria-label="英文字幕窗口">
+                <div class="grid-stack-item-content detail-panel-surface">
+                  <div class="detail-panel-head"><button class="detail-panel-handle" type="button" title="拖动英文字幕窗口；方向键移动，Shift + 方向键缩放" aria-label="移动英文字幕窗口"><span data-icon="target"></span></button></div>
                   <div class="detail-sub-scroll" id="detail-en" aria-live="polite"></div>
                 </div>
-                <div class="detail-sub-col" role="region" aria-label="中文字幕">
+              </section>
+              <section class="grid-stack-item detail-panel" data-panel="zh" gs-id="zh" gs-x="9" gs-y="0" gs-w="3" gs-h="12" aria-label="中文字幕窗口">
+                <div class="grid-stack-item-content detail-panel-surface">
+                  <div class="detail-panel-head"><button class="detail-panel-handle" type="button" title="拖动中文字幕窗口；方向键移动，Shift + 方向键缩放" aria-label="移动中文字幕窗口"><span data-icon="target"></span></button></div>
                   <div class="detail-sub-scroll" id="detail-zh" aria-live="polite"></div>
                 </div>
-              </div>
+              </section>
             </div>
           </div>
+          <span class="sr-only" id="detail-layout-status" role="status"></span>
         </section>
 
         <section class="books-pane hidden" id="books-pane" aria-labelledby="tab-books">
@@ -188,6 +209,7 @@
     <div class="podcast-details-head"><h2 id="podcast-details-title">单集详情</h2><button class="studio-icon-button" id="podcast-details-close" type="button" title="关闭详情" aria-label="关闭详情" autofocus><span data-icon="close"></span></button></div>
     <div class="podcast-details-content" id="podcast-details-content"></div>
   </dialog>
+  <script src="/js/gridstack-all.js"></script>
   <script type="module" src="/js/videos.js"></script>
 </body>
 </html>

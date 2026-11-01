@@ -1,3 +1,5 @@
+import { msg, t } from './i18n.js';
+
 const SMALL_NUMBERS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
 const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
 const CONTRACTIONS = new Map([
@@ -43,15 +45,19 @@ export function describeShadowingAttempt(cue, { matched = [], startWordIndex = 0
   const missingWords = missing.map((word) => word.text.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, ''));
   const missingWordIndexes = missing.map((word) => word.wordIndex);
   const totalWords = words.length;
-  let summary = matchedWords ? `已对齐 ${matchedWords}/${totalWords} 词` : '尚未对齐';
-  let advice = `从「${words[0]?.text || ''}」开始，放慢一点再读。`;
-  if (missingWords.length) advice = `「${missingWords.slice(0, 3).join(' / ')}」未对齐，下一遍单独读清后再连起来。`;
+  let summaryMessage = matchedWords ? msg('已对齐 {{matched}}/{{total}} 词', { matched: matchedWords, total: totalWords }) : msg('尚未对齐');
+  let adviceMessage = msg('从「{{word}}」开始，放慢一点再读。', { word: words[0]?.text || '' });
+  if (missingWords.length) adviceMessage = msg('「{{words}}」未对齐，下一遍单独读清后再连起来。', { words: missingWords.slice(0, 3).join(' / ') });
   else if (matchedWords === totalWords && totalWords) {
-    summary = startWordIndex > 0 ? '本段已对齐' : '整句已对齐';
-    advice = '保持当前节奏，句末留出自然停顿。';
-  } else if (matchedWords) advice = '保持当前节奏，继续读下一词。';
-  if (!totalWords) { summary = '无可点评字幕'; advice = ''; }
-  return { status, summary, advice, matchedWords, totalWords, coverage: totalWords ? matchedWords / totalWords : 0, missingWords, missingWordIndexes };
+    summaryMessage = msg(startWordIndex > 0 ? '本段已对齐' : '整句已对齐');
+    adviceMessage = msg('保持当前节奏，句末留出自然停顿。');
+  } else if (matchedWords) adviceMessage = msg('保持当前节奏，继续读下一词。');
+  if (!totalWords) { summaryMessage = msg('无可点评字幕'); adviceMessage = msg(''); }
+  return {
+    status, summary: t(summaryMessage.i18nKey, summaryMessage.values), advice: t(adviceMessage.i18nKey, adviceMessage.values),
+    summaryMessage, adviceMessage, matchedWords, totalWords,
+    coverage: totalWords ? matchedWords / totalWords : 0, missingWords, missingWordIndexes,
+  };
 }
 
 export class ShadowingReviewLog {

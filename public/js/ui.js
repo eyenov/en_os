@@ -1,16 +1,19 @@
 /* Tiny DOM helpers, icons, toasts and modal. */
 
+import { localizedText, localize, setI18nAttribute, t } from './i18n.js';
+
 export function h(tag, props = {}, ...children) {
   const element = document.createElement(tag);
   for (const [key, value] of Object.entries(props || {})) {
     if (value === null || value === undefined || value === false) continue;
     if (key === 'class' || key === 'className') element.className = value;
-    else if (key === 'html') element.innerHTML = value;
-    else if (key === 'text') element.textContent = value;
+    else if (key === 'html') { element.innerHTML = value; localize(element); }
+    else if (key === 'text') element.replaceChildren(localizedText(value));
     else if (key === 'dataset') Object.assign(element.dataset, value);
     else if (key.startsWith('on') && typeof value === 'function') element.addEventListener(key.slice(2).toLowerCase(), value);
     else if (key === 'value') element.value = value;
     else if (key === 'checked' || key === 'disabled' || key === 'selected') element[key] = Boolean(value);
+    else if (['title', 'aria-label', 'placeholder', 'alt'].includes(key)) setI18nAttribute(element, key, value);
     else element.setAttribute(key, value === true ? '' : value);
   }
   append(element, children);
@@ -20,13 +23,14 @@ export function h(tag, props = {}, ...children) {
 export function append(parent, children) {
   for (const child of children.flat(Infinity)) {
     if (child === null || child === undefined || child === false) continue;
-    parent.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    parent.append(child instanceof Node ? child : parent.getAttribute('translate') === 'no' ? document.createTextNode(String(child)) : localizedText(child));
   }
 }
 
 const ICONS = {
   headphones: '<path d="M4 14v-2a8 8 0 0 1 16 0v2"/><path d="M4 14a2 2 0 0 1 2-2h1v6H6a2 2 0 0 1-2-2z"/><path d="M20 14a2 2 0 0 0-2-2h-1v6h1a2 2 0 0 0 2-2z"/>',
   book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15.5H6.5A2.5 2.5 0 0 0 4 21z"/><path d="M4 18.5A2.5 2.5 0 0 1 6.5 16H20"/>',
+  globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a17 17 0 0 1 0 20 17 17 0 0 1 0-20"/>',
   mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/>',
   pen: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z"/>',
   play: '<path d="M8 5l11 7-11 7z" fill="currentColor" stroke="none"/>',
@@ -35,6 +39,8 @@ const ICONS = {
   clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/>',
   arrowRight: '<path d="M4 12h15"/><path d="M13 6l6 6-6 6"/>',
   arrowLeft: '<path d="M20 12H5"/><path d="M11 18l-6-6 6-6"/>',
+  maximize: '<path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/>',
+  minimize: '<path d="M8 3v3a2 2 0 0 1-2 2H3m13-5v3a2 2 0 0 0 2 2h3M3 16h3a2 2 0 0 1 2 2v3m8 0v-3a2 2 0 0 1 2-2h3"/>',
   check: '<path d="M4 12.5l5 5L20 6.5"/>',
   sparkles: '<path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M18.5 15l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8z"/>',
   target: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" fill="currentColor"/>',
@@ -65,11 +71,65 @@ export function icon(name, size = 18, stroke = 1.7) {
   return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
 }
 
+export function bindFullscreen(button, element, onError = () => {}) {
+  const root = element.ownerDocument;
+  const enter = element.requestFullscreen || element.webkitRequestFullscreen;
+  const exit = root.exitFullscreen || root.webkitExitFullscreen;
+  const supported = Boolean(enter && exit && (root.fullscreenEnabled ?? root.webkitFullscreenEnabled ?? true));
+  let pending = false;
+  let errorReported = false;
+
+  const active = () => Boolean(root.fullscreenElement || root.webkitFullscreenElement);
+  const sync = () => {
+    const entered = active();
+    button.disabled = pending || !(entered ? exit : supported);
+    const label = entered ? '退出全屏' : supported ? '进入全屏' : '当前浏览器不支持页面全屏';
+    setI18nAttribute(button, 'title', label);
+    setI18nAttribute(button, 'aria-label', label);
+    button.setAttribute('aria-pressed', String(entered));
+    button.innerHTML = icon(entered ? 'minimize' : 'maximize', 18);
+  };
+  const reportError = (error) => {
+    if (errorReported) return;
+    errorReported = true;
+    onError(error);
+  };
+  const toggle = async () => {
+    if (pending || button.disabled) return;
+    pending = true;
+    errorReported = false;
+    sync();
+    try {
+      if (active()) await exit.call(root);
+      else await enter.call(element);
+    } catch (error) {
+      reportError(error);
+    } finally {
+      pending = false;
+      sync();
+    }
+  };
+  const click = () => { void toggle(); };
+  button.addEventListener('click', click);
+  for (const event of ['fullscreenchange', 'webkitfullscreenchange']) root.addEventListener(event, sync);
+  for (const event of ['fullscreenerror', 'webkitfullscreenerror']) root.addEventListener(event, reportError);
+  sync();
+  return {
+    toggle,
+    destroy() {
+      button.removeEventListener('click', click);
+      for (const event of ['fullscreenchange', 'webkitfullscreenchange']) root.removeEventListener(event, sync);
+      for (const event of ['fullscreenerror', 'webkitfullscreenerror']) root.removeEventListener(event, reportError);
+    },
+  };
+}
+
 export function toast(message, type = 'info', timeout = 3400) {
   const root = document.getElementById('toasts');
   if (!root) return;
-  if ([...root.children].some((child) => child.dataset.message === message)) return;
-  const node = h('div', { class: `toast ${type}`, 'data-message': message }, h('span', { class: 'toast-icon' }, type === 'ok' ? '✓' : type === 'err' ? '!' : '·'), h('span', {}, message));
+  const identity = typeof message === 'object' ? JSON.stringify(message) : message;
+  if ([...root.children].some((child) => child.dataset.message === identity)) return;
+  const node = h('div', { class: `toast ${type}`, 'data-message': identity }, h('span', { class: 'toast-icon' }, type === 'ok' ? '✓' : type === 'err' ? '!' : '·'), h('span', {}, message));
   root.append(node);
   setTimeout(() => {
     node.classList.add('fade-out');

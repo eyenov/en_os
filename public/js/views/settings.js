@@ -1,6 +1,7 @@
-import { getHealth, getProviders, providerHasEnvKey, testConnection } from '../api.js';
+import { errorMessage, getHealth, getProviders, providerHasEnvKey, testConnection } from '../api.js';
 import { clearAllData, getSettings, resetSettings, saveSettings } from '../store.js';
 import { h, icon, modal, toast } from '../ui.js';
+import { getLocale, localize, msg, setI18nAttribute, setLocale, setText } from '../i18n.js';
 
 export async function renderSettings(ctx) {
   const providers = getProviders();
@@ -112,9 +113,9 @@ export async function renderSettings(ctx) {
       ),
       h('div', { class: 'field-row' },
         h('div', { class: 'field' }, h('label', {}, 'Base URL'), baseInput,
-          h('div', { class: 'hint' }, `默认 ${meta.baseUrl}`)),
+          h('div', { class: 'hint' }, msg('默认 {{url}}', { url: meta.baseUrl }))),
         h('div', { class: 'field' }, h('label', {}, '模型'), modelInput, modelList,
-          h('div', { class: 'hint' }, meta.models?.length ? `常用：${meta.models.join(' / ')}` : '填写服务商提供的模型 ID')),
+          h('div', { class: 'hint' }, meta.models?.length ? msg('常用：{{models}}', { models: meta.models.join(' / ') }) : '填写服务商提供的模型 ID')),
       ),
       healthNote,
       h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px' },
@@ -147,6 +148,7 @@ export async function renderSettings(ctx) {
       healthNote.className = 'callout';
       healthNote.innerHTML = `${icon('info', 16)}<span>尚未配置模型密钥。</span>`;
     }
+    localize(healthNote);
   }
 
   async function runTest() {
@@ -154,16 +156,16 @@ export async function renderSettings(ctx) {
     persist();
     testing = true;
     testResult.className = 'test-result';
-    testResult.textContent = '正在请求…';
+    setText(testResult, '正在请求…');
     renderPanel();
     try {
       const result = await testConnection(getSettings());
       testResult.className = 'test-result ok';
-      testResult.textContent = `连接成功 · ${result.latency}ms · 模型 ${result.model || '—'}`;
+      setText(testResult, '连接成功 · {{latency}}ms · 模型 {{model}}', { latency: result.latency, model: result.model || '—' });
       toast('连接成功', 'ok', 2000);
     } catch (error) {
       testResult.className = 'test-result err';
-      testResult.textContent = `连接失败：${error.message}`;
+      setText(testResult, '连接失败：{{error}}', { error: errorMessage(error) });
       toast('连接失败，请检查 Key、Base URL 与模型名。', 'err', 4200);
     } finally {
       testing = false;
@@ -187,9 +189,11 @@ export async function renderSettings(ctx) {
     h('div', { class: 'field', style: 'margin-top:14px' },
       h('label', {}, 'YouTube Data API Key ', h('span', { class: 'badge' }, '仅用于视频搜索')),
       h('div', { class: 'key-row' }, youtubeKeyInput,
-        h('button', { class: 'icon-round', type: 'button', 'aria-label': youtubeVisible ? '隐藏密钥' : '显示密钥', onclick: () => {
+        h('button', { class: 'icon-round', type: 'button', 'aria-label': youtubeVisible ? '隐藏密钥' : '显示密钥', onclick: (event) => {
           youtubeVisible = !youtubeVisible;
           youtubeKeyInput.type = youtubeVisible ? 'text' : 'password';
+          setI18nAttribute(event.currentTarget, 'aria-label', youtubeVisible ? '隐藏密钥' : '显示密钥');
+          event.currentTarget.firstElementChild.innerHTML = icon(youtubeVisible ? 'lock' : 'key', 17);
         } }, h('span', { html: icon(youtubeVisible ? 'lock' : 'key', 17) })),
       ),
       h('div', { class: 'hint' }, '也可以给服务端设置 YOUTUBE_API_KEY 环境变量。Key 只保存在本机，不写入日志。'),
@@ -214,7 +218,7 @@ export async function renderSettings(ctx) {
         ctx.navigate();
       } }, '清空全部数据'),
       h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async () => {
-        const ok = await modal({ title: '恢复默认设置？', body: '服务商、模型与模型开关恢复默认。已保存的模型密钥和 YouTube 密钥会保留。', actions: [{ label: '取消', value: false }, { label: '恢复', value: true, primary: true }] });
+        const ok = await modal({ title: '恢复默认设置？', body: '界面语言恢复为中文，服务商、模型与模型开关恢复默认。已保存的模型密钥和 YouTube 密钥会保留。', actions: [{ label: '取消', value: false }, { label: '恢复', value: true, primary: true }] });
         if (!ok) return;
         const { keys, youtubeKey } = getSettings();
         resetSettings();
@@ -231,12 +235,19 @@ export async function renderSettings(ctx) {
     h('div', { class: 'callout', style: 'margin-top:8px', html: `${icon('lock', 16)}<span>环境密钥仅可用于服务端配置的模型地址。YouTube、播客、图书和免费字幕翻译也需要访问各自的第三方服务。本应用默认仅供本机使用。</span>` }),
   );
 
+  const localeSelect = h('select', {
+    id: 'interface-language', class: 'input', 'data-locale-select': '',
+    onchange: (event) => setLocale(event.target.value),
+  }, h('option', { value: 'zh-CN', translate: 'no', selected: getLocale() === 'zh-CN' }, '中文'),
+  h('option', { value: 'en', translate: 'no', selected: getLocale() === 'en' }, 'English'));
+
   el.append(
     h('div', { class: 'page-head' },
-      h('p', { class: 'eyebrow' }, 'Settings'),
+      h('p', { class: 'eyebrow' }, '设置'),
       h('h1', {}, '设置'),
       h('p', { class: 'lede' }, '模型服务、YouTube 搜索与本机数据。'),
     ),
+    h('div', { class: 'settings-language' }, h('label', { for: 'interface-language' }, '界面语言'), localeSelect),
     h('div', { class: 'settings-grid' },
       h('div', {},
         h('div', { class: 'card settings-card' },
