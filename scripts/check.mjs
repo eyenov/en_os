@@ -49,8 +49,10 @@ for (const module of modules.values()) {
 }
 
 const html = await readFile(path.join(root, 'public/videos.html'), 'utf8');
+const resourceURLs = [...html.matchAll(/\b(?:src|href)="([^"]+)"/g)].map((match) => new URL(match[1], 'http://enos.local'));
+const resourcePaths = new Set(resourceURLs.filter((url) => url.origin === 'http://enos.local').map((url) => url.pathname));
 for (const resource of ['/css/base.css', '/css/studio.css', '/js/videos.js']) {
-  assert.ok(html.includes(`"${resource}"`), `Missing studio resource: ${resource}`);
+  assert.ok(resourcePaths.has(resource), `Missing studio resource: ${resource}`);
   await access(path.join(root, 'public', resource));
 }
 assert.ok(!html.includes('rail-chat'), 'Retired standalone chat must not return');

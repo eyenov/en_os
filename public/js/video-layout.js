@@ -32,9 +32,75 @@ export function fitVideoLayout(layout, rows = 12) {
   return layout.map(({ id, x, y, w, h }) => {
     const panel = { id, x, y, w, h };
     const above = layout.some((other) => other.id !== id && other.y < y && overlaps(panel, other));
-    const below = layout.some((other) => other.id !== id && other.y > y && overlaps(panel, other));
-    return { ...panel, h: above && !below ? Math.max(3, rows - y) : h };
+    const below = layout.filter((other) => other.id !== id && other.y > y && overlaps(panel, other)).length;
+    const height = above && !below ? Math.max(3, rows - y) : below ? Math.min(h, Math.max(3, rows - y - below * 3)) : h;
+    return { ...panel, h: height };
   });
+}
+
+export function alignVideoColumns(layout, columns = 12, resizedId = null, edge = 'e') {
+  if (!layout.length) return [];
+  const groups = new Map();
+  for (const { id, x, y, w, h } of layout) {
+    const key = columns === 1 ? 0 : x;
+    if (!groups.has(key)) groups.set(key, { x: key, panels: [] });
+    groups.get(key).panels.push({ id, x, y, w, h });
+  }
+  const ordered = [...groups.values()].sort((left, right) => left.x - right.x);
+  for (const group of ordered) group.panels.sort((left, right) => left.y - right.y);
+  const minimum = columns === 1 ? 1 : 2;
+  const resized = ordered.find((group) => group.panels.some((item) => item.id === resizedId));
+  const fixedWidth = resized ? Math.max(minimum, Math.min(columns - minimum * (ordered.length - 1), resized.panels.find((item) => item.id === resizedId).w)) : 0;
+  const flexible = ordered.filter((group) => group !== resized);
+  const remaining = columns - fixedWidth - flexible.length * minimum;
+  const weights = flexible.map((group) => Math.max(0, group.panels[0].w - minimum));
+  const weightSum = weights.reduce((sum, weight) => sum + weight, 0);
+  const widths = flexible.map((group, index) => {
+    const extra = resized ? 0 : remaining * (weightSum ? weights[index] / weightSum : 1 / flexible.length);
+    return { group, width: resized ? Math.max(minimum, group.panels[0].w) : minimum + Math.floor(extra), fraction: extra - Math.floor(extra) };
+  });
+  let unused = columns - fixedWidth - widths.reduce((sum, item) => sum + item.width, 0);
+  if (resized) {
+    const index = ordered.indexOf(resized);
+    const left = ordered.slice(0, index).reverse();
+    const right = ordered.slice(index + 1);
+    for (const group of edge === 'w' ? [...left, ...right] : [...right, ...left]) {
+      if (!unused) break;
+      const item = widths.find((entry) => entry.group === group);
+      const adjustment = unused > 0 ? unused : Math.max(unused, minimum - item.width);
+      item.width += adjustment;
+      unused -= adjustment;
+    }
+  } else {
+    for (const item of widths.slice().sort((left, right) => right.fraction - left.fraction)) {
+      if (unused <= 0) break;
+      item.width += 1;
+      unused -= 1;
+    }
+  }
+  let nextColumn = 0;
+  const result = new Map();
+  for (const group of ordered) {
+    const width = group === resized ? fixedWidth : widths.find((item) => item.group === group).width;
+    let nextRow = 0;
+    for (const panel of group.panels) {
+      result.set(panel.id, { ...panel, x: nextColumn, y: nextRow, w: width });
+      nextRow += panel.h;
+    }
+    nextColumn += width;
+  }
+  return layout.map((item) => result.get(item.id));
+}
+
+export function moveVideoWindow(layout, id, column, beforeId = null) {
+  const source = layout.find((item) => item.id === id);
+  if (!source) return layout.map((item) => ({ ...item }));
+  const target = layout.filter((item) => item.id !== id && item.x === column).sort((left, right) => left.y - right.y);
+  const before = target.find((item) => item.id === beforeId);
+  const last = target.at(-1);
+  return layout.map((item) => item.id === id
+    ? { ...item, x: column, w: target[0]?.w || source.w, y: before ? before.y - 0.5 : last ? last.y + last.h : 0 }
+    : { ...item });
 }
 
 export function normalizeVideoVisibility(value) {
@@ -58,21 +124,38 @@ export class VideoWindowLayout {
     this.grid = window.GridStack.init({
       column: 12, cellHeight: 48, margin: 4, minRow: 12, maxRow: 48,
       mode: 'top', handle: '.detail-panel-handle', animate: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-      alwaysShowResizeHandle: 'mobile', draggable: { appendTo: 'parent' }, resizable: { handles: 'e,s,se' },
+      alwaysShowResizeHandle: 'mobile', draggable: { appendTo: 'parent' }, resizable: { handles: 'w,e,s,se,sw' },
       acceptWidgets: false, removable: false,
     }, element);
-    this.grid.on('dragstart resizestart', () => {
-      this.gesture = true;
-      element.classList.add('is-layout-dragging');
+    const trackPress = (event) => {
+      const panel = event.target.closest?.('[data-panel]');
+      const point = this.pointer(event);
+      if (!panel || !point || !this.element.contains(panel)) return;
+      const rect = panel.getBoundingClientRect();
+      this.press = { id: panel.dataset.panel, offsetColumn: (point.x - rect.left) / this.grid.cellWidth(), offsetRow: (point.y - rect.top) / this.grid.getCellHeight() };
+    };
+    document.addEventListener('pointerdown', trackPress, { capture: true, passive: true });
+    document.addEventListener('touchstart', trackPress, { capture: true, passive: true });
+    const trackPointer = (event) => {
+      const point = this.pointer(event);
+      if (this.action && point) {
+        this.action.point = point;
+        this.action.rawPoint = true;
+      }
+    };
+    document.addEventListener('pointermove', trackPointer, { capture: true, passive: true });
+    document.addEventListener('touchmove', trackPointer, { capture: true, passive: true });
+    this.grid.on('dragstart resizestart', (event, panel) => this.startGesture(event, panel));
+    this.grid.on('drag resize', (event, panel) => {
+      const point = this.pointer(event);
+      if (this.action && point && !this.action.rawPoint) this.action.point = point;
+      if (this.action && event.type === 'resize') {
+        this.action.edge = event.hasMovedX ? 'w' : 'e';
+        this.action.size = { w: panel.gridstackNode.w, h: panel.gridstackNode.h };
+        this.resizeGesture(this.action, panel);
+      }
     });
-    this.grid.on('dragstop resizestop', () => {
-      this.gesture = false;
-      element.classList.remove('is-layout-dragging');
-      this.fit();
-      this.remember();
-      setText(status, '窗口布局已更新');
-      onChange();
-    });
+    this.grid.on('dragstop resizestop', (event, panel) => this.finishGesture(event, panel));
     this.grid.on('change', () => {
       if (this.applying || this.gesture) return;
       this.fit();
@@ -146,14 +229,97 @@ export class VideoWindowLayout {
   }
 
   fit() {
-    if (this.applying || this.gesture || this.mobile) return;
-    const layout = fitVideoLayout(this.grid.engine.nodes);
-    if (!layout.some((item) => this.panels.get(item.id)?.gridstackNode?.h !== item.h)) return;
-    this.applying = true;
-    this.grid.batchUpdate();
-    for (const item of layout) this.grid.update(this.panels.get(item.id), { h: item.h });
-    this.grid.batchUpdate(false);
-    this.applying = false;
+    if (this.applying || this.gesture) return;
+    const saved = this.layouts[this.mode][this.mobile ? 'mobile' : 'desktop'] || this.defaults();
+    const ids = this.visibleIds();
+    const layout = this.arrange(saved.filter((item) => ids.includes(item.id)));
+    const actual = this.currentLayout();
+    if (actual.length !== layout.length || layout.some((item) => {
+      const node = actual.find((other) => other.id === item.id);
+      return !node || ['x', 'y', 'w', 'h'].some((key) => item[key] !== node[key]);
+    })) this.apply();
+  }
+
+  currentLayout() {
+    return this.grid.getGridItems().map((panel) => panel.gridstackNode)
+      .filter((item) => item && this.visibleIds().includes(item.id)).map(({ id, x, y, w, h }) => ({ id, x, y, w, h }));
+  }
+
+  arrange(layout, resizedId = null, edge = 'e') {
+    const columns = this.mobile ? 1 : 12;
+    const aligned = alignVideoColumns(layout, columns, resizedId, edge);
+    return this.mobile && this.mode === 'normal' ? aligned : alignVideoColumns(fitVideoLayout(aligned), columns);
+  }
+
+  pointer(event) {
+    const pointer = event.touches?.[0] || event.changedTouches?.[0] || event;
+    return Number.isFinite(pointer.clientX) && Number.isFinite(pointer.clientY) ? { x: pointer.clientX, y: pointer.clientY } : null;
+  }
+
+  startGesture(event, panel) {
+    const point = this.pointer(event);
+    const rect = panel.getBoundingClientRect();
+    const press = this.press?.id === panel.dataset.panel ? this.press : null;
+    this.action = {
+      id: panel.dataset.panel, layout: this.currentLayout(), point,
+      saved: this.layouts[this.mode][this.mobile ? 'mobile' : 'desktop'].map((item) => ({ ...item })),
+      offsetColumn: press?.offsetColumn ?? (point ? (point.x - rect.left) / this.grid.cellWidth() : 0),
+      offsetRow: press?.offsetRow ?? (point ? (point.y - rect.top) / this.grid.getCellHeight() : 0),
+    };
+    this.press = null;
+    this.gesture = true;
+    this.element.classList.add('is-layout-dragging');
+  }
+
+  resizeGesture(action, panel, preview = true) {
+    const size = action.size || panel.gridstackNode;
+    const original = action.saved.find((item) => item.id === action.id);
+    const displayed = action.layout.find((item) => item.id === action.id);
+    const width = this.mobile ? 1 : Math.round(size.w * original.w / displayed.w);
+    const resized = action.saved.map((item) => item.id === action.id ? { ...item, w: width, h: size.h } : { ...item });
+    this.commit(resized, size.w === displayed.w ? null : action.id, action.edge);
+    if (preview) {
+      const node = panel.gridstackNode;
+      Object.assign(panel.style, {
+        left: `${node.x * this.grid.cellWidth()}px`, top: `${node.y * this.grid.getCellHeight()}px`,
+        width: `${node.w * this.grid.cellWidth()}px`, height: `${node.h * this.grid.getCellHeight()}px`,
+      });
+    }
+  }
+
+  finishGesture(event, panel) {
+    const action = this.action;
+    const node = panel.gridstackNode;
+    this.action = null;
+    this.gesture = false;
+    this.element.classList.remove('is-layout-dragging');
+    if (!action || !node) return;
+    const saved = action.saved;
+    if (event.type === 'resizestop') {
+      this.resizeGesture(action, panel, false);
+    } else {
+      const rect = this.element.getBoundingClientRect();
+      const position = action.point ? Math.round((action.point.x - rect.left) / this.grid.cellWidth() - action.offsetColumn) : node.x;
+      const columns = [...new Map(action.layout.map((item) => [item.x, item])).values()].sort((left, right) => left.x - right.x);
+      const target = this.mobile ? columns[0] : columns.find((item) => position >= item.x && position < item.x + item.w);
+      const column = target ? saved.find((item) => item.id === target.id).x : position < 0 ? -1 : 12;
+      const row = action.point ? (action.point.y - rect.top) / this.grid.getCellHeight() - action.offsetRow : node.y;
+      let nextRow = 0;
+      const before = target && action.layout.filter((item) => item.x === target.x && item.id !== action.id)
+        .sort((left, right) => left.y - right.y).find((item) => {
+          const midpoint = nextRow + item.h / 2;
+          nextRow += item.h;
+          return row < midpoint;
+        });
+      this.commit(moveVideoWindow(saved, action.id, column, before?.id));
+    }
+    setText(this.status, '窗口布局已更新');
+  }
+
+  commit(layout, resizedId = null, edge = 'e') {
+    this.layouts[this.mode][this.mobile ? 'mobile' : 'desktop'] = this.arrange(layout, resizedId, edge);
+    this.apply();
+    this.remember();
   }
 
   defaults() {
@@ -161,7 +327,7 @@ export class VideoWindowLayout {
       const cellHeight = this.grid.getCellHeight();
       const videoHeight = Math.max(3, Math.min(7, Math.ceil(((this.host.clientWidth - 12) * 9 / 16 + 32) / cellHeight)));
       let row = 0;
-      return (this.mode === 'normal' ? VIDEO_PANEL_IDS : this.visibleIds()).map((id) => {
+      return (this.mode === 'normal' ? VIDEO_PANEL_IDS : this.eligibleIds()).map((id) => {
         const height = id === 'video' ? videoHeight : this.mode === 'shadowing' ? 12 - videoHeight : id === 'agent' ? 6 : 10;
         const item = { id, x: 0, y: row, w: 1, h: height };
         row += height;
@@ -183,13 +349,11 @@ export class VideoWindowLayout {
 
   remember() {
     if (this.applying || this.gesture || this.mobile === null) return;
-    const layout = this.grid.getGridItems().map((panel) => panel.gridstackNode)
-      .filter((item) => item && this.visibleIds().includes(item.id)).map(({ id, x, y, w, h }) => ({ id, x, y, w, h }));
+    const layout = this.currentLayout();
     const key = this.mobile ? 'mobile' : 'desktop';
     const previous = this.layouts[this.mode][key] || (this.mode === 'normal' && layout.length !== VIDEO_PANEL_IDS.length ? this.defaults() : layout);
-    this.layouts[this.mode][key] = this.mode === 'normal'
-      ? previous.map((item) => layout.find((current) => current.id === item.id) || item)
-      : layout;
+    if (!this.appliedLayout) this.layouts[this.mode][key] = this.mode === 'normal'
+      ? previous.map((item) => layout.find((current) => current.id === item.id) || item) : layout;
     if (this.mode !== 'normal') return;
     try {
       localStorage.setItem(VIDEO_LAYOUT_KEY, JSON.stringify(this.layouts.normal.desktop));
@@ -203,7 +367,11 @@ export class VideoWindowLayout {
     this.applying = true;
     const columns = this.mobile ? 1 : 12;
     const ids = this.visibleIds();
-    const layout = this.layouts[this.mode][this.mobile ? 'mobile' : 'desktop'] || this.defaults();
+    const key = this.mobile ? 'mobile' : 'desktop';
+    const saved = this.arrange(this.layouts[this.mode][key] || this.defaults());
+    this.layouts[this.mode][key] = saved;
+    const layout = this.arrange(saved.filter((item) => ids.includes(item.id)));
+    const maxWidth = columns - (this.mobile ? 1 : 2) * Math.max(0, new Set(layout.map((item) => item.x)).size - 1);
     this.grid.batchUpdate();
     this.grid.column(columns);
     for (const [id, panel] of this.panels) {
@@ -212,12 +380,12 @@ export class VideoWindowLayout {
       panel.classList.toggle('hidden', !visible);
       panel.inert = !visible;
       if (visible && !panel.gridstackNode) this.grid.makeWidget(panel, { id });
-      if (visible) this.grid.update(panel, { minW: this.mobile ? 1 : 2, minH: 3, maxH: 24 });
+      if (visible) this.grid.update(panel, { minW: this.mobile ? 1 : 2, maxW: maxWidth, minH: 3, maxH: 24 });
     }
-    this.grid.load(layout.filter((item) => ids.includes(item.id)).map((item) => ({ ...item })), false);
+    this.grid.load(layout, false);
     this.grid.batchUpdate(false);
+    this.appliedLayout = this.currentLayout();
     this.applying = false;
-    this.fit();
     this.element.dataset.layoutMode = this.mode;
     this.element.dataset.layoutColumns = String(columns);
     this.onChange();
@@ -277,10 +445,24 @@ export class VideoWindowLayout {
     event.preventDefault();
     const horizontal = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
     const direction = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
-    const property = event.shiftKey ? horizontal ? 'w' : 'h' : horizontal ? 'x' : 'y';
-    const minimum = property === 'w' ? this.mobile ? 1 : 2 : property === 'h' ? 3 : 0;
-    this.grid.update(panel, { [property]: Math.max(minimum, node[property] + direction) });
-    this.remember();
+    const saved = this.layouts[this.mode][this.mobile ? 'mobile' : 'desktop'];
+    const original = saved.find((item) => item.id === node.id);
+    const visible = this.currentLayout();
+    if (event.shiftKey) {
+      const width = this.mobile ? 1 : Math.max(2, Math.round((node.w + direction) * original.w / node.w));
+      this.commit(saved.map((item) => item.id === node.id ? { ...item, ...(horizontal ? { w: width } : { h: Math.max(3, node.h + direction) }) } : { ...item }), horizontal ? node.id : null);
+    } else if (horizontal && !this.mobile) {
+      const columns = [...new Map(visible.map((item) => [item.x, item])).values()].sort((left, right) => left.x - right.x);
+      const target = columns[columns.findIndex((item) => item.x === node.x) + direction];
+      const column = target ? saved.find((item) => item.id === target.id).x : direction < 0 ? -1 : 12;
+      this.commit(moveVideoWindow(saved, node.id, column));
+    } else if (!horizontal) {
+      const stack = visible.filter((item) => item.x === node.x).sort((left, right) => left.y - right.y);
+      const index = stack.findIndex((item) => item.id === node.id);
+      if (!stack[index + direction]) return;
+      const before = direction < 0 ? stack[index - 1].id : stack[index + 2]?.id;
+      this.commit(moveVideoWindow(saved, node.id, original.x, before));
+    }
     const label = { video: '视频窗口', agent: 'Agent 对话窗口', en: '英文字幕窗口', zh: '中文字幕窗口' }[panel.dataset.panel];
     setText(this.status, '{{window}}位置已更新', { window: msg(label || panel.getAttribute('aria-label')) });
     this.onChange();

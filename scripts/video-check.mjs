@@ -20,6 +20,7 @@ const BASE = process.env.ENOS_URL || 'http://127.0.0.1:8787';
 const SHOTS = path.resolve('.shots');
 const PROFILE = path.resolve('.chrome-video-profile');
 const MOBILE = process.argv.includes('--mobile') || process.env.ENOS_MOBILE === '1';
+const LAYOUT_ONLY = process.argv.includes('--layout');
 const VIEWPORT = MOBILE
   ? { width: 390, height: 844, screenWidth: 390, screenHeight: 844, deviceScaleFactor: 1, mobile: true }
   : { width: 1440, height: 1000, screenWidth: 1440, screenHeight: 1000, deviceScaleFactor: 1, mobile: false };
@@ -193,7 +194,7 @@ async function checkFullscreen(cdp, name, preserved) {
   return passed && await cdp.evaluate(preserved);
 }
 
-async function dragWindow(cdp, selector, deltaX, deltaY, touch = false) {
+async function dragWindow(cdp, selector, deltaX, deltaY, touch = false, inspect = null) {
   if (selector.includes('ui-resizable')) {
     const hover = await cdp.evaluate(`(() => {
       const panel = document.querySelector(${JSON.stringify(selector)}).closest('[data-panel]');
@@ -222,9 +223,40 @@ async function dragWindow(cdp, selector, deltaX, deltaY, touch = false) {
     if (touch) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...point, id: 1 }] });
     else await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point, button: 'left', buttons: 1 });
   }
+  if (inspect) {
+    await cdp.waitFor(`!document.getElementById('detail-window-grid').getAnimations({ subtree: true }).some(animation => animation.playState === 'running')`);
+    await inspect();
+  }
   if (touch) await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   else await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: origin.x + deltaX, y: origin.y + deltaY, button: 'left', buttons: 0, clickCount: 1 });
   await cdp.waitFor(`!document.getElementById('detail-window-grid').classList.contains('is-layout-dragging') && !document.getElementById('detail-window-grid').getAnimations({ subtree: true }).some(animation => animation.playState === 'running')`);
+}
+
+async function checkVideoColumns(cdp) {
+  return cdp.evaluate(`(() => {
+    const element = document.getElementById('detail-window-grid');
+    const grid = element.gridstack;
+    const bounds = element.getBoundingClientRect();
+    const groups = new Map();
+    for (const node of grid.engine.nodes) {
+      if (!groups.has(node.x)) groups.set(node.x, []);
+      groups.get(node.x).push(node);
+      const rect = document.querySelector('[data-panel="' + node.id + '"]').getBoundingClientRect();
+      if (Math.abs(rect.left - bounds.left - node.x * grid.cellWidth()) > 1 || Math.abs(rect.width - node.w * grid.cellWidth()) > 1) return false;
+    }
+    let column = 0;
+    for (const [start, stack] of [...groups].sort((left, right) => left[0] - right[0])) {
+      if (start !== column) return false;
+      stack.sort((left, right) => left.y - right.y);
+      let row = 0;
+      for (const node of stack) {
+        if (node.y !== row || node.w !== stack[0].w) return false;
+        row += node.h;
+      }
+      column += stack[0].w;
+    }
+    return !groups.size || column === grid.getColumn();
+  })()`);
 }
 
 function posterFor(index) {
@@ -604,6 +636,77 @@ async function main() {
       return { width: grid.cellWidth(), height: grid.getCellHeight() };
     })()`);
     layoutChecks.fourIndependentWindows = await cdp.evaluate(`document.querySelectorAll('#detail-window-grid > .detail-panel').length === 4 && document.querySelectorAll('#detail-window-grid .detail-panel-handle').length === 4 && !document.getElementById('detail-resize')`);
+    const sameColumn = await cdp.evaluate(`(() => {
+      const video = document.querySelector('[data-panel="video"]').gridstackNode;
+      const agent = document.querySelector('[data-panel="agent"]').gridstackNode;
+      window.__COLUMN_WIDTH_BEFORE__ = agent.w;
+      return (video.y - agent.y + (video.h - agent.h) / 2 - 1) * document.getElementById('detail-window-grid').gridstack.getCellHeight();
+    })()`);
+    await dragWindow(cdp, '[data-panel="agent"] .detail-panel-handle', 0, sameColumn, MOBILE);
+    layoutChecks.sameColumnDragKeepsWidth = await cdp.evaluate(`(() => {
+      const video = document.querySelector('[data-panel="video"]').gridstackNode;
+      const agent = document.querySelector('[data-panel="agent"]').gridstackNode;
+      return agent.y === 0 && video.y === agent.h && video.x === agent.x && agent.w === window.__COLUMN_WIDTH_BEFORE__ && video.w === agent.w;
+    })()`);
+    layoutChecks.sameColumnStacksCompactly = await checkVideoColumns(cdp);
+    const sameColumnDown = await cdp.evaluate(`(() => {
+      const video = document.querySelector('[data-panel="video"]').gridstackNode;
+      const agent = document.querySelector('[data-panel="agent"]').gridstackNode;
+      return (video.y - agent.y + (video.h - agent.h) / 2 + 1) * document.getElementById('detail-window-grid').gridstack.getCellHeight();
+    })()`);
+    await dragWindow(cdp, '[data-panel="agent"] .detail-panel-handle', 0, sameColumnDown, MOBILE);
+    layoutChecks.sameColumnDownKeepsWidth = await cdp.evaluate(`(() => {
+      const video = document.querySelector('[data-panel="video"]').gridstackNode;
+      const agent = document.querySelector('[data-panel="agent"]').gridstackNode;
+      return video.y === 0 && agent.y === video.h && video.w === window.__COLUMN_WIDTH_BEFORE__ && agent.w === video.w;
+    })()`);
+    await cdp.evaluate(`document.getElementById('detail-layout-reset').click()`);
+    await settleVideoLayout(cdp);
+    if (!MOBILE) {
+      await cdp.evaluate(`window.__DESTINATION_WIDTH__ = document.querySelector('[data-panel="en"]').gridstackNode.w`);
+      await dragWindow(cdp, '[data-panel="agent"] .detail-panel-handle', gridMetrics.width * 6, 0);
+      layoutChecks.crossColumnAdoptsTargetWidth = await cdp.evaluate(`(() => {
+        const video = document.querySelector('[data-panel="video"]').gridstackNode;
+        const agent = document.querySelector('[data-panel="agent"]').gridstackNode;
+        const english = document.querySelector('[data-panel="en"]').gridstackNode;
+        return agent.x === english.x && agent.w === window.__DESTINATION_WIDTH__ && english.w === agent.w && video.w === 6
+          && new Set(document.getElementById('detail-window-grid').gridstack.engine.nodes.map(node => node.x)).size === 3;
+      })()`);
+      layoutChecks.crossColumnStacksCompactly = await checkVideoColumns(cdp);
+      await cdp.screenshot('video-column-drop.png');
+      await cdp.evaluate(`document.getElementById('detail-layout-reset').click()`);
+      await settleVideoLayout(cdp);
+      await dragWindow(cdp, '[data-panel="agent"] .ui-resizable-e', gridMetrics.width, 0, false, async () => {
+        layoutChecks.resizeSynchronizesBeforeRelease = await checkVideoColumns(cdp);
+      });
+      layoutChecks.lowerResizeUpdatesWholeColumn = await cdp.evaluate(`(() => {
+        const video = document.querySelector('[data-panel="video"]').gridstackNode;
+        const agent = document.querySelector('[data-panel="agent"]').gridstackNode;
+        return agent.w > 6 && video.w === agent.w && video.x === agent.x;
+      })()`);
+      layoutChecks.columnResizeTilesWholeWidth = await checkVideoColumns(cdp);
+      if (!layoutChecks.lowerResizeUpdatesWholeColumn || !layoutChecks.columnResizeTilesWholeWidth) console.error('    column resize state', await cdp.evaluate(`(() => {
+        const grid = document.getElementById('detail-window-grid').gridstack;
+        return { nodes: grid.engine.nodes.map(({ id, x, y, w, h, maxW }) => ({ id, x, y, w, h, maxW })), stopHandler: String(grid._gsEventHandler.resizestop) };
+      })()`));
+      await cdp.screenshot('video-column-resize.png');
+      await dragWindow(cdp, '[data-panel="en"] .ui-resizable-e', gridMetrics.width, 0, false, async () => {
+        layoutChecks.middleColumnSynchronizesBeforeRelease = await checkVideoColumns(cdp);
+      });
+      layoutChecks.middleColumnRemainsTiled = await checkVideoColumns(cdp);
+      await cdp.evaluate(`window.__RIGHT_COLUMN_WIDTH__ = document.querySelector('[data-panel="zh"]').gridstackNode.w`);
+      await dragWindow(cdp, '[data-panel="zh"] .ui-resizable-w', -gridMetrics.width, 0);
+      layoutChecks.rightmostColumnCanGrow = await cdp.evaluate(`document.querySelector('[data-panel="zh"]').gridstackNode.w > window.__RIGHT_COLUMN_WIDTH__`);
+      layoutChecks.rightmostResizeTilesWholeWidth = await checkVideoColumns(cdp);
+      await cdp.evaluate(`document.getElementById('detail-layout-reset').click()`);
+      await settleVideoLayout(cdp);
+      await dragWindow(cdp, '[data-panel="agent"] .detail-panel-handle', -gridMetrics.width, 0);
+      layoutChecks.outerEdgeCreatesTiledColumn = await cdp.evaluate(`new Set(document.getElementById('detail-window-grid').gridstack.engine.nodes.map(node => node.x)).size === 4`)
+        && await checkVideoColumns(cdp);
+      await cdp.screenshot('video-column-split.png');
+      await cdp.evaluate(`document.getElementById('detail-layout-reset').click()`);
+      await settleVideoLayout(cdp);
+    }
     await dragWindow(cdp, '[data-panel="en"] .detail-panel-handle', MOBILE ? 0 : -gridMetrics.width * 6, MOBILE ? -gridMetrics.height * 6 : 0, MOBILE);
     layoutChecks.dragMovesOnlySelectedWindow = await cdp.evaluate(`(() => {
       const node = document.querySelector('[data-panel="en"]').gridstackNode;
@@ -661,6 +764,7 @@ async function main() {
       return stored.length === 4 && stored.every(item => Object.keys(item).sort().join(',') === 'h,id,w,x,y');
     })()`);
     layoutChecks.freshControllerRestoresSavedLayout = await checkRestoredVideoLayout(cdp);
+    await cdp.evaluate(`window.__BEFORE_HIDDEN_COLUMNS__ = JSON.stringify(document.getElementById('detail-window-grid').gridstack.engine.nodes.map(({ id, x, y, w, h }) => ({ id, x, y, w, h })).sort((left, right) => left.id.localeCompare(right.id)))`);
     await cdp.evaluate(`document.querySelector('#detail-layout-menu > summary').click()`);
     await cdp.waitFor(`document.getElementById('detail-layout-menu').open && document.querySelectorAll('#detail-layout-options input').length === 4`);
     layoutChecks.layoutMenuHasThumbnails = await cdp.evaluate(`(() => {
@@ -679,6 +783,8 @@ async function main() {
     layoutChecks.hiddenAgentKeepsDraft = await cdp.evaluate(`document.getElementById('detail-chat-input').value === 'A draft that must survive rearranging' && document.getElementById('detail-chat-input').isConnected && document.querySelector('[data-panel="agent"]').inert`);
     await cdp.evaluate(`document.querySelector('#detail-layout-options [data-video-panel="video"]').click()`);
     await cdp.waitFor(`document.querySelector('[data-panel="video"]').classList.contains('hidden') && document.getElementById('detail-window-grid').gridstack.engine.nodes.length === 2`);
+    await settleVideoLayout(cdp);
+    layoutChecks.hiddenColumnLeavesNoGaps = await checkVideoColumns(cdp);
     layoutChecks.hiddenVideoKeepsPlayer = await cdp.evaluate(`window.__VIDEO_PLAYER__ === window.__WINDOW_PLAYER__ && window.__PLAYER_FRAME__.isConnected && window.__PLAYER_FRAME__.parentElement === window.__WINDOW_FRAME_PARENT__ && window.__PLAYER_FRAME__.contentWindow === window.__WINDOW_FRAME_CONTEXT__ && window.__VIDEO_PLAYER__.time === window.__WINDOW_TIME__`);
     layoutChecks.visibilitySaved = await cdp.evaluate(`JSON.stringify(JSON.parse(localStorage.getItem('enos.youtube.visibility.v1'))) === JSON.stringify(['en', 'zh']) && JSON.parse(localStorage.getItem('enos.youtube.layout.v1')).length === 4`);
     layoutChecks.freshControllerRestoresVisibility = await checkRestoredVideoLayout(cdp);
@@ -689,6 +795,8 @@ async function main() {
     await cdp.evaluate(`[...document.querySelectorAll('#detail-layout-options input')].forEach(input => { if (!input.checked) input.click(); })`);
     await settleVideoLayout(cdp);
     layoutChecks.showRestoresOriginalNodes = await cdp.evaluate(`document.getElementById('detail-window-grid').gridstack.engine.nodes.length === 4 && window.__VIDEO_PLAYER__ === window.__WINDOW_PLAYER__ && window.__PLAYER_FRAME__.contentWindow === window.__WINDOW_FRAME_CONTEXT__ && document.getElementById('detail-chat-input').value === 'A draft that must survive rearranging' && !document.querySelector('#detail-window-grid .detail-panel.hidden')`);
+    layoutChecks.showRestoresColumnOwnership = await cdp.evaluate(`JSON.stringify(document.getElementById('detail-window-grid').gridstack.engine.nodes.map(({ id, x, y, w, h }) => ({ id, x, y, w, h })).sort((left, right) => left.id.localeCompare(right.id))) === window.__BEFORE_HIDDEN_COLUMNS__`);
+    layoutChecks.shownColumnsRemainTiled = await checkVideoColumns(cdp);
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     layoutChecks.menuEscapeRestoresFocus = await cdp.evaluate(`!document.getElementById('detail-layout-menu').open && document.activeElement === document.querySelector('#detail-layout-menu > summary')`);
@@ -724,6 +832,12 @@ async function main() {
       window.__NORMAL_WINDOWS__ = JSON.stringify(grid.save(false, false, undefined, grid.getColumn()).map(({ id, x, y, w, h }) => ({ id, x, y, w, h })).sort((left, right) => left.id.localeCompare(right.id)));
     })()`);
     console.log('  layout', JSON.stringify(layoutChecks));
+    if (LAYOUT_ONLY) {
+      const ok = Object.values(layoutChecks).every((value) => value === true) && cdp.exceptions.length === 0;
+      console.log(JSON.stringify({ ok, layout: layoutChecks, exceptions: cdp.exceptions }, null, 2));
+      if (!ok) process.exitCode = 2;
+      return;
+    }
     await cdp.evaluate(`(() => {
       window.__I18N_PLAYER__ = window.__VIDEO_PLAYER__;
       window.__I18N_FRAME__ = window.__PLAYER_FRAME__;

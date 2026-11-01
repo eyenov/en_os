@@ -1,6 +1,6 @@
 import { beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultVideoLayout, fitVideoLayout, normalizeVideoLayout, normalizeVideoVisibility, VIDEO_LAYOUT_KEY, VIDEO_PANEL_IDS, VIDEO_VISIBILITY_KEY, VideoWindowLayout } from '../public/js/video-layout.js';
+import { alignVideoColumns, defaultVideoLayout, fitVideoLayout, moveVideoWindow, normalizeVideoLayout, normalizeVideoVisibility, VIDEO_LAYOUT_KEY, VIDEO_PANEL_IDS, VIDEO_VISIBILITY_KEY, VideoWindowLayout } from '../public/js/video-layout.js';
 
 const storage = new Map();
 globalThis.localStorage = {
@@ -74,6 +74,99 @@ test('height fitting keeps standalone windows independent and respects the minim
   layout[1].y = 11;
   assert.equal(fitVideoLayout(layout)[1].h, 3);
   assert.deepEqual(fitVideoLayout([]), []);
+});
+
+test('columns share widths, tile horizontally and pack each stack from the top', () => {
+  const layout = defaultVideoLayout().map((item) => ({ ...item, y: item.y + 4 }));
+  layout[1].w = 4;
+  layout[1].y = 15;
+  const original = structuredClone(layout);
+  assert.deepEqual(alignVideoColumns(layout), defaultVideoLayout());
+  assert.deepEqual(layout, original);
+});
+
+test('resizing a lower window changes its whole column and retains minimum neighbor widths', () => {
+  const layout = defaultVideoLayout();
+  layout[1].w = 8;
+  const aligned = alignVideoColumns(layout, 12, 'agent');
+  assert.deepEqual(aligned.map(({ x, w }) => ({ x, w })), [{ x: 0, w: 8 }, { x: 0, w: 8 }, { x: 8, w: 2 }, { x: 10, w: 2 }]);
+  layout[1].w = 12;
+  assert.deepEqual(alignVideoColumns(layout, 12, 'agent'), aligned);
+  layout[1].w = 2;
+  assert.deepEqual(alignVideoColumns(layout, 12, 'agent').map((item) => item.w), [2, 2, 7, 3]);
+});
+
+test('column resizing compensates at the selected boundary without moving the opposite edge', () => {
+  const layout = defaultVideoLayout();
+  layout[2].w = 4;
+  const east = alignVideoColumns(layout, 12, 'en', 'e');
+  assert.deepEqual(east.map(({ x, w }) => ({ x, w })), [{ x: 0, w: 6 }, { x: 0, w: 6 }, { x: 6, w: 4 }, { x: 10, w: 2 }]);
+  const west = alignVideoColumns(layout, 12, 'en', 'w');
+  assert.deepEqual(west.map(({ x, w }) => ({ x, w })), [{ x: 0, w: 5 }, { x: 0, w: 5 }, { x: 5, w: 4 }, { x: 9, w: 3 }]);
+  layout[3].w = 4;
+  layout[2].w = 3;
+  const last = alignVideoColumns(layout, 12, 'zh', 'w');
+  assert.equal(last[3].x + last[3].w, 12);
+  assert.equal(last[0].w, 6);
+});
+
+test('remaining columns fill the width without gaps after hiding a whole column', () => {
+  const layout = defaultVideoLayout().slice(2);
+  assert.deepEqual(alignVideoColumns(layout).map(({ x, w, y }) => ({ x, w, y })), [{ x: 0, w: 6, y: 0 }, { x: 6, w: 6, y: 0 }]);
+  assert.deepEqual(alignVideoColumns([]), []);
+});
+
+test('single-column layouts retain width while compacting vertical gaps', () => {
+  const layout = [{ id: 'video', x: 0, y: 0, w: 1, h: 4 }, { id: 'en', x: 0, y: 9, w: 1, h: 10 }];
+  assert.deepEqual(alignVideoColumns(layout, 1), [{ ...layout[0] }, { ...layout[1], y: 4 }]);
+});
+
+test('same-column reordering keeps every window at its original column width', () => {
+  const layout = defaultVideoLayout();
+  const moved = alignVideoColumns(moveVideoWindow(layout, 'agent', 0, 'video'));
+  assert.deepEqual(moved.slice(0, 2), [{ ...layout[0], y: 7 }, { ...layout[1], y: 0 }]);
+  assert.deepEqual(moved.map((item) => item.w), layout.map((item) => item.w));
+  assert.deepEqual(layout, defaultVideoLayout());
+});
+
+test('moving across columns adopts the destination width without creating an extra column', () => {
+  const layout = defaultVideoLayout();
+  const moved = alignVideoColumns(moveVideoWindow(layout, 'agent', 6));
+  assert.deepEqual(moved[1], { ...layout[1], x: 6, y: 12, w: 3 });
+  assert.equal(moved[2].w, 3);
+  assert.equal(moved[0].w, 6);
+  assert.equal(new Set(moved.map((item) => item.x)).size, 3);
+  assert.deepEqual(layout, defaultVideoLayout());
+});
+
+test('dropping outside the outer edge can split a stack into a new tiled column', () => {
+  const moved = alignVideoColumns(moveVideoWindow(defaultVideoLayout(), 'agent', -1));
+  const columns = [...new Map(moved.map((item) => [item.x, item.w])).entries()].sort((left, right) => left[0] - right[0]);
+  assert.equal(columns.length, 4);
+  assert.equal(moved[1].x, 0);
+  assert.equal(columns.reduce((sum, item) => sum + item[1], 0), 12);
+  assert.ok(columns.every((item, index) => index === 0 || item[0] === columns[index - 1][0] + columns[index - 1][1]));
+});
+
+test('stacking tall windows reserves the minimum height for every lower window', () => {
+  const layout = alignVideoColumns(moveVideoWindow(defaultVideoLayout(), 'en', 0, 'agent'));
+  const fitted = alignVideoColumns(fitVideoLayout(layout));
+  const stack = fitted.filter((item) => item.x === 0).sort((left, right) => left.y - right.y);
+  assert.equal(stack.at(-1).y + stack.at(-1).h, 12);
+  assert.ok(stack.every((item) => item.h >= 3));
+  assert.equal(stack[0].y, 0);
+  assert.ok(stack.slice(1).every((item, index) => item.y === stack[index].y + stack[index].h));
+});
+
+test('saving a displayed projection does not replace hidden column ownership', () => {
+  const desktop = defaultVideoLayout();
+  const controller = Object.assign(Object.create(VideoWindowLayout.prototype), {
+    applying: false, gesture: false, mobile: false, mode: 'normal', shown: ['en', 'zh'], appliedLayout: alignVideoColumns(desktop.slice(2)),
+    grid: { getGridItems: () => alignVideoColumns(desktop.slice(2)).map((item) => ({ gridstackNode: item })) },
+    layouts: { normal: { desktop, mobile: null } },
+  });
+  controller.remember();
+  assert.deepEqual(controller.readDesktop(), desktop);
 });
 
 test('window visibility accepts only supported IDs, including intentionally hiding all windows', () => {
