@@ -421,6 +421,20 @@
 #detail-meta { min-width: 0; max-width: 42%; flex: 0 0 auto; font-size: 10.5px; line-height: 1.4; color: var(--faint); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .detail-head .btn, .detail-head .detail-back { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 30px; margin: 0; padding: 0 8px; font-size: 10.5px; }
 .detail-head button svg { width: 16px; height: 16px; }
+.detail-layout-menu { position: relative; flex: none; }
+.detail-layout-menu > summary { list-style: none; cursor: pointer; }
+.detail-layout-menu > summary::-webkit-details-marker { display: none; }
+.detail-layout-menu > summary svg { width: 16px; height: 16px; }
+.detail-layout-popover { position: absolute; top: calc(100% + 10px); right: 0; z-index: 80; width: min(280px, calc(100vw - 76px)); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 6px; background: #fff; box-shadow: 0 10px 28px rgba(21, 53, 35, .14); }
+.detail-layout-option { min-width: 0; display: grid; gap: 6px; cursor: pointer; }
+.detail-layout-option:has(input:disabled) { opacity: .45; cursor: not-allowed; }
+.detail-layout-option:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+.detail-layout-thumbnail { display: grid; grid-template-columns: repeat(var(--layout-columns, 12), minmax(0, 1fr)); grid-template-rows: repeat(var(--layout-rows, 12), minmax(0, 1fr)); gap: 2px; width: 100%; height: 68px; padding: 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper-2); overflow: hidden; }
+.detail-layout-cell { min-width: 0; min-height: 0; border: 1px solid #b9c8be; border-radius: 2px; background: #dce5df; }
+.detail-layout-cell.is-target { z-index: 1; border-color: var(--accent); background: #71a993; }
+.detail-layout-cell.is-hidden { background: transparent; border-style: dashed; opacity: .55; }
+.detail-layout-label { display: flex; align-items: flex-start; gap: 6px; min-height: 28px; font-size: 11px; line-height: 1.3; overflow-wrap: anywhere; }
+.detail-layout-label input { flex: none; width: 13px; height: 13px; margin: 0; accent-color: var(--accent); }
 .detail-body {
   flex: 1; min-width: 0; min-height: 0; padding: 4px 6px 6px; overflow: auto;
   scrollbar-width: thin; scrollbar-color: #cad5ce transparent;

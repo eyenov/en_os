@@ -18,7 +18,7 @@ import {
 import { getSettings, getShadowingReviews, saveShadowingReviews } from './store.js';
 import { ShadowingReviewLog, ShadowingTracker, SilentMediaFollower, SpeechSession } from './shadowing.js';
 import { PronunciationPlayer } from './pronunciation.js';
-import { VideoWindowLayout } from './video-layout.js';
+import { defaultVideoLayout, VideoWindowLayout } from './video-layout.js';
 import { activeCharCount, cueProgress, findCueIndex, findWordIndex, formatTimestamp, normalizeCues, serializeSrt } from './subtitle-sync.js';
 import { bindFullscreen, h, icon, toast } from './ui.js';
 import { renderSettings } from './views/settings.js';
@@ -142,6 +142,9 @@ const detailMessages = document.getElementById('detail-messages');
 const detailChatForm = document.getElementById('detail-chat-form');
 const detailChatInput = document.getElementById('detail-chat-input');
 const detailChatSend = document.getElementById('detail-chat-send');
+const detailLayoutMenu = document.getElementById('detail-layout-menu');
+const detailLayoutOptions = document.getElementById('detail-layout-options');
+const detailLayoutControls = new Map();
 let detailWindows = null;
 const detailBack = document.getElementById('detail-back');
 let detailCueEls = [];
@@ -1772,7 +1775,10 @@ function openVideoDetail(item) {
   renderTabState();
   detailWindows ??= new VideoWindowLayout({
     host: detailBody, element: document.getElementById('detail-window-grid'), status: document.getElementById('detail-layout-status'),
-    onChange: () => { if (practiceFor('detail')) requestAnimationFrame(() => { if (practiceFor('detail')) scrollPracticeWord(practice); }); },
+    onChange: () => {
+      renderDetailLayoutMenu();
+      if (practiceFor('detail')) requestAnimationFrame(() => { if (practiceFor('detail')) scrollPracticeWord(practice); });
+    },
   });
   detailWindows.refresh();
   mountDetailPlayer(item);
@@ -1781,6 +1787,7 @@ function openVideoDetail(item) {
 }
 
 function closeVideoDetail({ restore = true } = {}) {
+  detailLayoutMenu.open = false;
   state.detailOpen = false;
   detail.requestSeq += 1;
   detail.translateSeq += 1;
@@ -2154,6 +2161,41 @@ detailChatInput.addEventListener('keydown', (event) => {
     event.preventDefault();
     detailChatForm.requestSubmit();
   }
+});
+
+function renderDetailLayoutMenu() {
+  const names = { video: '视频', agent: 'Agent', en: '英文字幕', zh: '中文字幕' };
+  const layout = detailWindows?.preview() || {
+    columns: 12, rows: 12, panels: defaultVideoLayout().map((item) => ({ ...item, visible: true, enabled: true })),
+  };
+  for (const panel of layout.panels) {
+    if (!detailLayoutControls.has(panel.id)) {
+      const input = h('input', {
+        type: 'checkbox', 'data-video-panel': panel.id, 'aria-label': names[panel.id],
+        onchange: (event) => detailWindows?.setVisible(panel.id, event.target.checked),
+      });
+      const thumbnail = h('span', { class: 'detail-layout-thumbnail', 'aria-hidden': 'true' });
+      detailLayoutOptions.append(h('label', { class: 'detail-layout-option' }, thumbnail,
+        h('span', { class: 'detail-layout-label' }, input, h('span', {}, names[panel.id]))));
+      detailLayoutControls.set(panel.id, { input, thumbnail });
+    }
+    const { input, thumbnail } = detailLayoutControls.get(panel.id);
+    input.checked = panel.visible;
+    input.disabled = !panel.enabled;
+    setI18nAttribute(input, 'title', !panel.enabled ? '跟读时此窗口自动收起'
+      : msg(panel.visible ? '隐藏 {{window}}' : '显示 {{window}}', { window: msg(names[panel.id]) }));
+    thumbnail.style.setProperty('--layout-columns', String(layout.columns));
+    thumbnail.style.setProperty('--layout-rows', String(layout.rows));
+    thumbnail.replaceChildren(...layout.panels.filter((item) => item.visible || item.id === panel.id).map((item) => h('span', {
+      class: `detail-layout-cell${item.id === panel.id ? ' is-target' : ''}${item.visible ? '' : ' is-hidden'}`,
+      style: `grid-column:${item.x + 1} / span ${item.w};grid-row:${item.y + 1} / span ${item.h}`,
+    })));
+  }
+}
+
+detailLayoutMenu.addEventListener('toggle', () => { if (detailLayoutMenu.open) renderDetailLayoutMenu(); });
+document.addEventListener('pointerdown', (event) => {
+  if (detailLayoutMenu.open && !detailLayoutMenu.contains(event.target)) detailLayoutMenu.open = false;
 });
 document.getElementById('detail-layout-reset').addEventListener('click', () => detailWindows?.reset());
 
@@ -2613,6 +2655,10 @@ channelList.addEventListener('click', (event) => {
 });
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
+    if (detailLayoutMenu.open) {
+      detailLayoutMenu.open = false;
+      detailLayoutMenu.querySelector('summary').focus();
+    }
     document.getElementById('studio-language-menu').open = false;
     document.getElementById('podcast-sync-settings').open = false;
     if (compactViewport.matches && !state.treeCollapsed) {

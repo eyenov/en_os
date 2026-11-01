@@ -1,6 +1,6 @@
 import { beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultVideoLayout, normalizeVideoLayout, VIDEO_LAYOUT_KEY, VIDEO_PANEL_IDS, VideoWindowLayout } from '../public/js/video-layout.js';
+import { defaultVideoLayout, fitVideoLayout, normalizeVideoLayout, normalizeVideoVisibility, VIDEO_LAYOUT_KEY, VIDEO_PANEL_IDS, VIDEO_VISIBILITY_KEY, VideoWindowLayout } from '../public/js/video-layout.js';
 
 const storage = new Map();
 globalThis.localStorage = {
@@ -50,6 +50,63 @@ test('legacy video widths can migrate without collapsing subtitle panels', () =>
   assert.equal(layout[1].w, 7);
   assert.equal(layout[2].w + layout[3].w, 5);
   assert.deepEqual(normalizeVideoLayout(layout), layout);
+});
+
+test('lower windows follow the resized upper window and fill the remaining height', () => {
+  const layout = defaultVideoLayout();
+  layout[0].h = 7;
+  layout[1].y = 7;
+  const fitted = fitVideoLayout(layout);
+  assert.equal(fitted[0].h, 7);
+  assert.equal(fitted[1].y, 7);
+  assert.equal(fitted[1].h, 5);
+  assert.equal(layout[1].h, 7);
+  assert.deepEqual(fitted.slice(2), layout.slice(2));
+  layout[0].h = 3;
+  layout[1].y = 3;
+  assert.equal(fitVideoLayout(layout)[1].h, 9);
+});
+
+test('height fitting keeps standalone windows independent and respects the minimum height', () => {
+  assert.deepEqual(fitVideoLayout(defaultVideoLayout().filter((item) => item.id !== 'agent')),
+    defaultVideoLayout().filter((item) => item.id !== 'agent'));
+  const layout = defaultVideoLayout();
+  layout[1].y = 11;
+  assert.equal(fitVideoLayout(layout)[1].h, 3);
+  assert.deepEqual(fitVideoLayout([]), []);
+});
+
+test('window visibility accepts only supported IDs, including intentionally hiding all windows', () => {
+  assert.deepEqual(normalizeVideoVisibility(['zh', 'video']), ['video', 'zh']);
+  assert.deepEqual(normalizeVideoVisibility([]), []);
+  for (const value of [null, {}, ['video', 'video'], ['unknown'], [false]]) assert.deepEqual(normalizeVideoVisibility(value), VIDEO_PANEL_IDS);
+  const controller = Object.create(VideoWindowLayout.prototype);
+  storage.set(VIDEO_VISIBILITY_KEY, JSON.stringify(['en', 'agent']));
+  assert.deepEqual(controller.readVisibility(), ['agent', 'en']);
+});
+
+test('hidden windows keep their saved coordinates while visible windows change', () => {
+  const desktop = defaultVideoLayout();
+  const controller = Object.assign(Object.create(VideoWindowLayout.prototype), {
+    applying: false, gesture: false, mobile: false, mode: 'normal', shown: ['en', 'zh'],
+    grid: { getGridItems: () => [{ gridstackNode: { ...desktop[2], y: 2 } }, { gridstackNode: desktop[3] }, {}] },
+    layouts: { normal: { desktop, mobile: null } },
+  });
+  controller.remember();
+  const saved = controller.readDesktop();
+  assert.deepEqual(saved.slice(0, 2), desktop.slice(0, 2));
+  assert.equal(saved[2].y, 2);
+  assert.equal(saved.length, 4);
+});
+
+test('temporary shadowing layouts respect visibility without overwriting normal preferences', () => {
+  const controller = Object.assign(Object.create(VideoWindowLayout.prototype), { mode: 'normal', mobile: false, shown: ['agent', 'en', 'zh'] });
+  assert.deepEqual(controller.visibleIds(), ['agent', 'en', 'zh']);
+  controller.mode = 'shadowing';
+  assert.deepEqual(controller.visibleIds(), ['agent', 'en']);
+  controller.mobile = true;
+  assert.deepEqual(controller.visibleIds(), ['en']);
+  assert.deepEqual(controller.shown, ['agent', 'en', 'zh']);
 });
 
 test('mobile layout keeps full coordinates and ignores hidden panels without overwriting normal positions during practice', () => {

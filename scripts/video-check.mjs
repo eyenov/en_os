@@ -102,6 +102,38 @@ async function settleVideoLayout(cdp) {
   await cdp.waitFor(`!document.getElementById('detail-window-grid').getAnimations({ subtree: true }).some(animation => animation.playState === 'running')`);
 }
 
+async function checkRestoredVideoLayout(cdp) {
+  return cdp.evaluate(`(async () => {
+    const { VideoWindowLayout } = await import('/js/video-layout.js');
+    const source = document.getElementById('detail-window-grid').gridstack;
+    const snapshot = grid => JSON.stringify(grid.engine.nodes.map(({ id, x, y, w, h }) => ({ id, x, y, w, h })).sort((left, right) => left.id.localeCompare(right.id)));
+    const expected = snapshot(source);
+    const host = document.createElement('div');
+    host.className = 'detail-body';
+    host.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;width:' + document.getElementById('detail-body').clientWidth + 'px;height:600px';
+    const element = document.createElement('div');
+    element.className = 'grid-stack detail-window-grid';
+    for (const panel of document.querySelectorAll('#detail-window-grid > .detail-panel')) {
+      const copy = panel.cloneNode(false);
+      const handle = document.createElement('button');
+      handle.className = 'detail-panel-handle';
+      copy.append(handle);
+      element.append(copy);
+    }
+    host.append(element);
+    document.body.append(host);
+    let controller;
+    try {
+      controller = new VideoWindowLayout({ host, element, status: document.createElement('span') });
+      return snapshot(controller.grid) === expected;
+    } finally {
+      controller?.observer.disconnect();
+      controller?.grid.destroy(false);
+      host.remove();
+    }
+  })()`);
+}
+
 async function switchLocale(cdp, locale) {
   await cdp.evaluate(`(() => {
     document.getElementById('studio-language-menu').open = true;
@@ -584,26 +616,40 @@ async function main() {
         const node = document.querySelector('[data-panel="${id}"]').gridstackNode;
         const sorted = grid.engine.nodes.slice().sort((left, right) => left.y - right.y);
         const index = sorted.indexOf(node);
-        const neighbor = sorted[index > 0 ? index - 1 : index + 1];
-        return { x: node.x, y: node.y, deltaY: ${MOBILE} ? (neighbor.y - node.y) * grid.getCellHeight() : grid.getCellHeight() };
+        const neighbor = ${MOBILE} ? sorted[index > 0 ? index - 1 : index + 1] : sorted.find(other => other.x !== node.x);
+        const distance = neighbor.y - node.y;
+        return { x: node.x, y: node.y, deltaX: ${MOBILE} ? 0 : (neighbor.x - node.x) * grid.cellWidth(), deltaY: ${MOBILE} ? (distance + (neighbor.h - node.h) / 2 + Math.sign(distance)) * grid.getCellHeight() : 0 };
       })()`);
-      await dragWindow(cdp, `[data-panel="${id}"] .detail-panel-handle`, 0, previous.deltaY, MOBILE);
+      await dragWindow(cdp, `[data-panel="${id}"] .detail-panel-handle`, previous.deltaX, previous.deltaY, MOBILE);
       const moved = await cdp.evaluate(`(() => { const node = document.querySelector('[data-panel="${id}"]').gridstackNode; return node.x !== ${previous.x} || node.y !== ${previous.y}; })()`);
+      if (!moved) console.error('    window did not move', id, previous, await cdp.evaluate(`(() => { const { x, y, w, h } = document.querySelector('[data-panel="${id}"]').gridstackNode; return { x, y, w, h }; })()`));
       layoutChecks.everyWindowCanMove = layoutChecks.everyWindowCanMove && moved;
     }
+    layoutChecks.windowsAlignToTop = await cdp.evaluate(`(() => {
+      const grid = document.getElementById('detail-window-grid').gridstack;
+      return grid.getMode() === 'top' && grid.engine.nodes.every(node => node.y === 0 || grid.engine.nodes.some(other => other !== node
+        && node.x < other.x + other.w && other.x < node.x + node.w && node.y - 1 < other.y + other.h && other.y < node.y - 1 + node.h));
+    })()`);
     layoutChecks.playerAndDraftSurviveDrag = await cdp.evaluate(`window.__VIDEO_PLAYER__ === window.__WINDOW_PLAYER__ && window.__PLAYER_FRAME__ === window.__WINDOW_FRAME__ && window.__PLAYER_FRAME__.contentWindow === window.__WINDOW_FRAME_CONTEXT__ && window.__PLAYER_FRAME__.parentElement === window.__WINDOW_FRAME_PARENT__ && window.__VIDEO_PLAYER__.time === window.__WINDOW_TIME__ && window.__VIDEO_PLAYER__.playing === window.__WINDOW_PLAYING__ && document.getElementById('detail-chat-input').value === 'A draft that must survive rearranging' && document.querySelectorAll('#detail-en .detail-cue')[1].classList.contains('active')`);
     await cdp.evaluate(`window.__VIDEO_PLAYER__.playVideo()`);
     fullscreenChecks.youtube = await checkFullscreen(cdp, 'youtube', `window.__VIDEO_PLAYER__ === window.__WINDOW_PLAYER__ && window.__PLAYER_FRAME__ === window.__WINDOW_FRAME__ && window.__PLAYER_FRAME__.contentWindow === window.__WINDOW_FRAME_CONTEXT__ && window.__VIDEO_PLAYER__.time === window.__WINDOW_TIME__ && window.__VIDEO_PLAYER__.playing && document.getElementById('detail-chat-input').value === 'A draft that must survive rearranging' && !document.getElementById('video-detail').classList.contains('hidden')`);
     await cdp.evaluate(`window.__VIDEO_PLAYER__.pauseVideo()`);
-    await cdp.evaluate(`window.__BEFORE_WINDOW_RESIZE__ = { w: document.querySelector('[data-panel="agent"]').gridstackNode.w, h: document.querySelector('[data-panel="agent"]').gridstackNode.h }`);
-    await dragWindow(cdp, '[data-panel="agent"] .ui-resizable-se', MOBILE ? 0 : gridMetrics.width, gridMetrics.height);
-    layoutChecks.pointerResizesIndependentWindow = await cdp.evaluate(`(() => { const node = document.querySelector('[data-panel="agent"]').gridstackNode; return node.w !== window.__BEFORE_WINDOW_RESIZE__.w || node.h !== window.__BEFORE_WINDOW_RESIZE__.h; })()`);
+    await cdp.evaluate(`document.getElementById('detail-layout-reset').click()`);
+    await settleVideoLayout(cdp);
+    await cdp.evaluate(`window.__BEFORE_WINDOW_RESIZE__ = document.querySelector('[data-panel="video"]').gridstackNode.h`);
+    await dragWindow(cdp, '[data-panel="video"] .ui-resizable-s', 0, gridMetrics.height);
+    layoutChecks.pointerResizesIndependentWindow = await cdp.evaluate(`document.querySelector('[data-panel="video"]').gridstackNode.h > window.__BEFORE_WINDOW_RESIZE__`);
+    layoutChecks.lowerHeightFollowsUpper = MOBILE || await cdp.evaluate(`(() => {
+      const video = document.querySelector('[data-panel="video"]').gridstackNode;
+      const agent = document.querySelector('[data-panel="agent"]').gridstackNode;
+      return agent.y === video.y + video.h && agent.h === 12 - agent.y;
+    })()`);
     await cdp.evaluate(`(() => {
       const panel = document.querySelector('[data-panel="zh"]');
-      window.__BEFORE_KEYBOARD_SIZE__ = panel.gridstackNode.h;
-      panel.querySelector('button').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', shiftKey: true, bubbles: true }));
+      window.__BEFORE_KEYBOARD_SIZE__ = panel.gridstackNode[${JSON.stringify(MOBILE ? 'h' : 'w')}];
+      panel.querySelector('button').dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(MOBILE ? 'ArrowDown' : 'ArrowRight')}, shiftKey: true, bubbles: true }));
     })()`);
-    layoutChecks.keyboardResizesWindow = await cdp.evaluate(`document.querySelector('[data-panel="zh"]').gridstackNode.h === window.__BEFORE_KEYBOARD_SIZE__ + 1`);
+    layoutChecks.keyboardResizesWindow = await cdp.evaluate(`document.querySelector('[data-panel="zh"]').gridstackNode[${JSON.stringify(MOBILE ? 'h' : 'w')}] === window.__BEFORE_KEYBOARD_SIZE__ + 1`);
     await settleVideoLayout(cdp);
     layoutChecks.windowsAvoidOverlap = await cdp.evaluate(`(() => {
       const grid = document.getElementById('detail-window-grid').gridstack;
@@ -614,38 +660,38 @@ async function main() {
       const stored = JSON.parse(localStorage.getItem(${JSON.stringify(MOBILE ? 'enos.youtube.layout.v1.mobile' : 'enos.youtube.layout.v1')}));
       return stored.length === 4 && stored.every(item => Object.keys(item).sort().join(',') === 'h,id,w,x,y');
     })()`);
-    layoutChecks.freshControllerRestoresSavedLayout = await cdp.evaluate(`(async () => {
-      const { VideoWindowLayout } = await import('/js/video-layout.js');
-      const source = document.getElementById('detail-window-grid').gridstack;
-      const snapshot = grid => JSON.stringify(grid.getGridItems().map(panel => {
-        const { id, x, y, w, h } = panel.gridstackNode;
-        return { id, x, y, w, h };
-      }).sort((left, right) => left.id.localeCompare(right.id)));
-      const expected = snapshot(source);
-      const host = document.createElement('div');
-      host.className = 'detail-body';
-      host.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;width:' + document.getElementById('detail-body').clientWidth + 'px;height:600px';
-      const element = document.createElement('div');
-      element.className = 'grid-stack detail-window-grid';
-      for (const panel of source.getGridItems()) {
-        const copy = panel.cloneNode(false);
-        const handle = document.createElement('button');
-        handle.className = 'detail-panel-handle';
-        copy.append(handle);
-        element.append(copy);
-      }
-      host.append(element);
-      document.body.append(host);
-      let controller;
-      try {
-        controller = new VideoWindowLayout({ host, element, status: document.createElement('span') });
-        return snapshot(controller.grid) === expected;
-      } finally {
-        controller?.observer.disconnect();
-        controller?.grid.destroy(false);
-        host.remove();
-      }
+    layoutChecks.freshControllerRestoresSavedLayout = await checkRestoredVideoLayout(cdp);
+    await cdp.evaluate(`document.querySelector('#detail-layout-menu > summary').click()`);
+    await cdp.waitFor(`document.getElementById('detail-layout-menu').open && document.querySelectorAll('#detail-layout-options input').length === 4`);
+    layoutChecks.layoutMenuHasThumbnails = await cdp.evaluate(`(() => {
+      const grid = document.getElementById('detail-window-grid').gridstack;
+      return [...document.querySelectorAll('#detail-layout-options input')].every(input => {
+        const node = grid.engine.nodes.find(item => item.id === input.dataset.videoPanel);
+        const thumbnail = input.closest('label').querySelector('.detail-layout-thumbnail');
+        const target = thumbnail.querySelector('.is-target');
+        return input.checked && !input.disabled && thumbnail.getBoundingClientRect().width > 50
+          && target.style.gridColumn === (node.x + 1) + ' / span ' + node.w && target.style.gridRow === (node.y + 1) + ' / span ' + node.h;
+      });
     })()`);
+    await cdp.screenshot(MOBILE ? 'video-layout-menu-mobile.png' : 'video-layout-menu.png');
+    await cdp.evaluate(`document.querySelector('#detail-layout-options [data-video-panel="agent"]').click()`);
+    await cdp.waitFor(`document.querySelector('[data-panel="agent"]').classList.contains('hidden')`);
+    layoutChecks.hiddenAgentKeepsDraft = await cdp.evaluate(`document.getElementById('detail-chat-input').value === 'A draft that must survive rearranging' && document.getElementById('detail-chat-input').isConnected && document.querySelector('[data-panel="agent"]').inert`);
+    await cdp.evaluate(`document.querySelector('#detail-layout-options [data-video-panel="video"]').click()`);
+    await cdp.waitFor(`document.querySelector('[data-panel="video"]').classList.contains('hidden') && document.getElementById('detail-window-grid').gridstack.engine.nodes.length === 2`);
+    layoutChecks.hiddenVideoKeepsPlayer = await cdp.evaluate(`window.__VIDEO_PLAYER__ === window.__WINDOW_PLAYER__ && window.__PLAYER_FRAME__.isConnected && window.__PLAYER_FRAME__.parentElement === window.__WINDOW_FRAME_PARENT__ && window.__PLAYER_FRAME__.contentWindow === window.__WINDOW_FRAME_CONTEXT__ && window.__VIDEO_PLAYER__.time === window.__WINDOW_TIME__`);
+    layoutChecks.visibilitySaved = await cdp.evaluate(`JSON.stringify(JSON.parse(localStorage.getItem('enos.youtube.visibility.v1'))) === JSON.stringify(['en', 'zh']) && JSON.parse(localStorage.getItem('enos.youtube.layout.v1')).length === 4`);
+    layoutChecks.freshControllerRestoresVisibility = await checkRestoredVideoLayout(cdp);
+    layoutChecks.thumbnailsReflectHiddenWindows = await cdp.evaluate(`[...document.querySelectorAll('#detail-layout-options input')].filter(input => input.checked).length === 2 && document.querySelector('#detail-layout-options [data-video-panel="video"]').closest('label').querySelector('.is-target.is-hidden') !== null`);
+    await cdp.screenshot(MOBILE ? 'video-layout-hidden-mobile.png' : 'video-layout-hidden.png');
+    await cdp.evaluate(`document.querySelector('#detail-layout-options [data-video-panel="en"]').click(); document.querySelector('#detail-layout-options [data-video-panel="zh"]').click()`);
+    layoutChecks.allWindowsCanHide = await cdp.evaluate(`document.getElementById('detail-window-grid').gridstack.engine.nodes.length === 0 && document.querySelector('#detail-layout-menu > summary').getBoundingClientRect().width > 0 && [...document.querySelectorAll('#detail-layout-options input')].every(input => !input.checked)`);
+    await cdp.evaluate(`[...document.querySelectorAll('#detail-layout-options input')].forEach(input => { if (!input.checked) input.click(); })`);
+    await settleVideoLayout(cdp);
+    layoutChecks.showRestoresOriginalNodes = await cdp.evaluate(`document.getElementById('detail-window-grid').gridstack.engine.nodes.length === 4 && window.__VIDEO_PLAYER__ === window.__WINDOW_PLAYER__ && window.__PLAYER_FRAME__.contentWindow === window.__WINDOW_FRAME_CONTEXT__ && document.getElementById('detail-chat-input').value === 'A draft that must survive rearranging' && !document.querySelector('#detail-window-grid .detail-panel.hidden')`);
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    layoutChecks.menuEscapeRestoresFocus = await cdp.evaluate(`!document.getElementById('detail-layout-menu').open && document.activeElement === document.querySelector('#detail-layout-menu > summary')`);
     await cdp.evaluate(`(() => {
       const grid = document.getElementById('detail-window-grid').gridstack;
       window.__SAVED_WINDOW_POSITIONS__ = JSON.stringify(grid.save(false, false, undefined, grid.getColumn()).map(({ id, x, y, w, h }) => ({ id, x, y, w, h })).sort((left, right) => left.id.localeCompare(right.id)));
@@ -688,6 +734,21 @@ async function main() {
     })()`);
     await switchLocale(cdp, 'en');
     i18nChecks.videoDetailEnglish = await englishSurface(cdp, '#video-detail');
+    await cdp.evaluate(`document.querySelector('#detail-layout-menu > summary').click()`);
+    i18nChecks.layoutMenuEnglish = await englishSurface(cdp, '#video-detail');
+    await cdp.screenshot(MOBILE ? 'video-layout-menu-english-mobile.png' : 'video-layout-menu-english.png');
+    if (MOBILE) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', { ...VIEWPORT, width: 320, height: 568, screenWidth: 320, screenHeight: 568 });
+      await settleVideoLayout(cdp);
+      i18nChecks.layoutMenuSmallEnglish = await cdp.evaluate(`(() => {
+        const rect = document.getElementById('detail-layout-options').getBoundingClientRect();
+        return rect.left >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight && [...document.querySelectorAll('.detail-layout-label')].every(label => label.scrollWidth <= label.clientWidth);
+      })()`);
+      await cdp.screenshot('video-layout-menu-english-320.png');
+      await cdp.send('Emulation.setDeviceMetricsOverride', VIEWPORT);
+      await settleVideoLayout(cdp);
+    }
+    await cdp.evaluate(`document.getElementById('detail-layout-menu').open = false`);
     i18nChecks.videoStatePreserved = await cdp.evaluate(`window.__VIDEO_PLAYER__ === window.__I18N_PLAYER__ && window.__PLAYER_FRAME__ === window.__I18N_FRAME__ && window.__VIDEO_PLAYER__.time === window.__I18N_VIDEO_TIME__ && document.getElementById('detail-chat-input').value === window.__I18N_DRAFT__ && [...document.querySelectorAll('#detail-en .detail-cue .word')].map(node => node.textContent).join(' ') === window.__I18N_EN_CUE__ && document.getElementById('detail-zh').textContent === window.__I18N_ZH_CUE__ && document.getElementById('studio-fullscreen').title === 'Enter fullscreen'`);
     await cdp.screenshot(MOBILE ? 'video-english-mobile.png' : 'video-english.png');
     await switchLocale(cdp, 'zh-CN');
@@ -700,6 +761,15 @@ async function main() {
       document.getElementById('detail-shadowing').click();
     })()`);
     await cdp.waitFor(`document.getElementById('video-detail').classList.contains('shadowing-active') && window.__SPEECH_INSTANCES__.at(-1).running`);
+    await cdp.evaluate(`document.querySelector('#detail-layout-menu > summary').click()`);
+    layoutChecks.practiceMenuMatchesWindows = await cdp.evaluate(`(() => {
+      const nodes = document.getElementById('detail-window-grid').gridstack.engine.nodes;
+      return [...document.querySelectorAll('#detail-layout-options input')].every(input => {
+        const id = input.dataset.videoPanel;
+        return input.checked === nodes.some(node => node.id === id) && input.disabled === (id === 'zh' || ${MOBILE} && id === 'agent');
+      });
+    })()`);
+    await cdp.evaluate(`document.getElementById('detail-layout-menu').open = false`);
     shadowingChecks.videoStartsSilent = await cdp.evaluate(`window.__VIDEO_PLAYER__.muted && !window.__VIDEO_PLAYER__.playing && document.getElementById('detail-player').inert && !document.getElementById('detail-shadowing-bar').classList.contains('hidden')`);
     await cdp.waitFor(`document.querySelector('#detail-shadowing-bar .shadowing-ipa').textContent.includes('/')`);
     shadowingChecks.videoNextWordHasIpa = await cdp.evaluate(`document.querySelector('#detail-shadowing-bar .shadowing-ipa').textContent.includes('/') && !document.querySelector('#detail-shadowing-bar .shadowing-pronounce').disabled`);

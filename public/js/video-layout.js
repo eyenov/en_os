@@ -1,6 +1,7 @@
 import { msg, setText } from './i18n.js';
 
 export const VIDEO_LAYOUT_KEY = 'enos.youtube.layout.v1';
+export const VIDEO_VISIBILITY_KEY = 'enos.youtube.visibility.v1';
 export const VIDEO_PANEL_IDS = ['video', 'agent', 'en', 'zh'];
 
 export function defaultVideoLayout(leftColumns = 6) {
@@ -26,6 +27,21 @@ export function normalizeVideoLayout(value) {
   return VIDEO_PANEL_IDS.map((id) => items.get(id));
 }
 
+export function fitVideoLayout(layout, rows = 12) {
+  const overlaps = (left, right) => left.x < right.x + right.w && right.x < left.x + left.w;
+  return layout.map(({ id, x, y, w, h }) => {
+    const panel = { id, x, y, w, h };
+    const above = layout.some((other) => other.id !== id && other.y < y && overlaps(panel, other));
+    const below = layout.some((other) => other.id !== id && other.y > y && overlaps(panel, other));
+    return { ...panel, h: above && !below ? Math.max(3, rows - y) : h };
+  });
+}
+
+export function normalizeVideoVisibility(value) {
+  if (!Array.isArray(value) || new Set(value).size !== value.length || value.some((id) => !VIDEO_PANEL_IDS.includes(id))) return [...VIDEO_PANEL_IDS];
+  return VIDEO_PANEL_IDS.filter((id) => value.includes(id));
+}
+
 export class VideoWindowLayout {
   constructor({ host, element, status, onChange = () => {} }) {
     this.host = host;
@@ -37,10 +53,11 @@ export class VideoWindowLayout {
     this.mobile = null;
     this.applying = false;
     this.gesture = false;
+    this.shown = this.readVisibility();
     this.layouts = { normal: { desktop: this.readDesktop(), mobile: this.readMobile() }, shadowing: { desktop: null, mobile: null } };
     this.grid = window.GridStack.init({
       column: 12, cellHeight: 48, margin: 4, minRow: 12, maxRow: 48,
-      mode: 'float', handle: '.detail-panel-handle', animate: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      mode: 'top', handle: '.detail-panel-handle', animate: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
       alwaysShowResizeHandle: 'mobile', draggable: { appendTo: 'parent' }, resizable: { handles: 'e,s,se' },
       acceptWidgets: false, removable: false,
     }, element);
@@ -51,11 +68,14 @@ export class VideoWindowLayout {
     this.grid.on('dragstop resizestop', () => {
       this.gesture = false;
       element.classList.remove('is-layout-dragging');
+      this.fit();
       this.remember();
       setText(status, '窗口布局已更新');
       onChange();
     });
     this.grid.on('change', () => {
+      if (this.applying || this.gesture) return;
+      this.fit();
       this.remember();
       onChange();
     });
@@ -87,8 +107,53 @@ export class VideoWindowLayout {
     return null;
   }
 
-  visibleIds() {
+  readVisibility() {
+    try { return normalizeVideoVisibility(JSON.parse(localStorage.getItem(VIDEO_VISIBILITY_KEY))); }
+    catch { return [...VIDEO_PANEL_IDS]; }
+  }
+
+  eligibleIds() {
     return this.mode === 'normal' ? VIDEO_PANEL_IDS : this.mobile ? ['video', 'en'] : ['video', 'agent', 'en'];
+  }
+
+  visibleIds() {
+    return this.eligibleIds().filter((id) => (this.shown || VIDEO_PANEL_IDS).includes(id));
+  }
+
+  setVisible(id, visible) {
+    if (!this.eligibleIds().includes(id)) return false;
+    this.remember();
+    const shown = this.shown || VIDEO_PANEL_IDS;
+    this.shown = VIDEO_PANEL_IDS.filter((panelId) => panelId === id ? visible : shown.includes(panelId));
+    this.apply();
+    this.remember();
+    try { localStorage.setItem(VIDEO_VISIBILITY_KEY, JSON.stringify(this.shown)); }
+    catch { setText(this.status, '窗口显示已调整，浏览器未能保存设置'); }
+    return true;
+  }
+
+  preview() {
+    const key = this.mobile ? 'mobile' : 'desktop';
+    const saved = this.layouts.normal[key] || this.defaults();
+    const visible = this.visibleIds();
+    const eligible = this.eligibleIds();
+    const panels = VIDEO_PANEL_IDS.map((id) => {
+      const node = this.panels.get(id)?.gridstackNode || saved.find((item) => item.id === id) || defaultVideoLayout().find((item) => item.id === id);
+      const { x, y, w, h } = node;
+      return { id, x, y, w, h, visible: visible.includes(id), enabled: eligible.includes(id) };
+    });
+    return { columns: this.mobile ? 1 : 12, rows: Math.max(12, ...panels.map((item) => item.y + item.h)), panels };
+  }
+
+  fit() {
+    if (this.applying || this.gesture || this.mobile) return;
+    const layout = fitVideoLayout(this.grid.engine.nodes);
+    if (!layout.some((item) => this.panels.get(item.id)?.gridstackNode?.h !== item.h)) return;
+    this.applying = true;
+    this.grid.batchUpdate();
+    for (const item of layout) this.grid.update(this.panels.get(item.id), { h: item.h });
+    this.grid.batchUpdate(false);
+    this.applying = false;
   }
 
   defaults() {
@@ -96,7 +161,7 @@ export class VideoWindowLayout {
       const cellHeight = this.grid.getCellHeight();
       const videoHeight = Math.max(3, Math.min(7, Math.ceil(((this.host.clientWidth - 12) * 9 / 16 + 32) / cellHeight)));
       let row = 0;
-      return this.visibleIds().map((id) => {
+      return (this.mode === 'normal' ? VIDEO_PANEL_IDS : this.visibleIds()).map((id) => {
         const height = id === 'video' ? videoHeight : this.mode === 'shadowing' ? 12 - videoHeight : id === 'agent' ? 6 : 10;
         const item = { id, x: 0, y: row, w: 1, h: height };
         row += height;
@@ -120,7 +185,11 @@ export class VideoWindowLayout {
     if (this.applying || this.gesture || this.mobile === null) return;
     const layout = this.grid.getGridItems().map((panel) => panel.gridstackNode)
       .filter((item) => item && this.visibleIds().includes(item.id)).map(({ id, x, y, w, h }) => ({ id, x, y, w, h }));
-    this.layouts[this.mode][this.mobile ? 'mobile' : 'desktop'] = layout;
+    const key = this.mobile ? 'mobile' : 'desktop';
+    const previous = this.layouts[this.mode][key] || (this.mode === 'normal' && layout.length !== VIDEO_PANEL_IDS.length ? this.defaults() : layout);
+    this.layouts[this.mode][key] = this.mode === 'normal'
+      ? previous.map((item) => layout.find((current) => current.id === item.id) || item)
+      : layout;
     if (this.mode !== 'normal') return;
     try {
       localStorage.setItem(VIDEO_LAYOUT_KEY, JSON.stringify(this.layouts.normal.desktop));
@@ -141,12 +210,14 @@ export class VideoWindowLayout {
       const visible = ids.includes(id);
       if (!visible && panel.gridstackNode) this.grid.removeWidget(panel, false, false);
       panel.classList.toggle('hidden', !visible);
+      panel.inert = !visible;
       if (visible && !panel.gridstackNode) this.grid.makeWidget(panel, { id });
       if (visible) this.grid.update(panel, { minW: this.mobile ? 1 : 2, minH: 3, maxH: 24 });
     }
-    this.grid.load(layout.map((item) => ({ ...item })), false);
+    this.grid.load(layout.filter((item) => ids.includes(item.id)).map((item) => ({ ...item })), false);
     this.grid.batchUpdate(false);
     this.applying = false;
+    this.fit();
     this.element.dataset.layoutMode = this.mode;
     this.element.dataset.layoutColumns = String(columns);
     this.onChange();
@@ -186,9 +257,11 @@ export class VideoWindowLayout {
   reset() {
     this.layouts[this.mode] = { desktop: this.mode === 'normal' ? defaultVideoLayout() : null, mobile: null };
     if (this.mode === 'normal') {
+      this.shown = [...VIDEO_PANEL_IDS];
       try {
         localStorage.removeItem('enos.detail.left.v1');
         localStorage.removeItem(`${VIDEO_LAYOUT_KEY}.mobile`);
+        localStorage.removeItem(VIDEO_VISIBILITY_KEY);
       } catch {}
     }
     this.apply();
