@@ -702,7 +702,8 @@ async function main() {
     await cdp.waitFor(`document.getElementById('video-detail').classList.contains('shadowing-active') && window.__SPEECH_INSTANCES__.at(-1).running`);
     shadowingChecks.videoStartsSilent = await cdp.evaluate(`window.__VIDEO_PLAYER__.muted && !window.__VIDEO_PLAYER__.playing && document.getElementById('detail-player').inert && !document.getElementById('detail-shadowing-bar').classList.contains('hidden')`);
     await cdp.waitFor(`document.querySelector('#detail-shadowing-bar .shadowing-ipa').textContent.includes('/')`);
-    shadowingChecks.videoNextWordHasIpa = await cdp.evaluate(`document.querySelector('#detail-en .word.shadow-next').dataset.ipa.includes('/') && !document.querySelector('#detail-shadowing-bar .shadowing-pronounce').disabled`);
+    shadowingChecks.videoNextWordHasIpa = await cdp.evaluate(`document.querySelector('#detail-shadowing-bar .shadowing-ipa').textContent.includes('/') && !document.querySelector('#detail-shadowing-bar .shadowing-pronounce').disabled`);
+    shadowingChecks.videoNoInlineIpa = await cdp.evaluate(`!document.querySelector('#detail-en [data-ipa]') && ['none', 'normal'].includes(getComputedStyle(document.querySelector('#detail-en .word.shadow-next'), '::after').content)`);
     shadowingChecks.pronunciationButtonStaysNearWord = await cdp.evaluate(`(() => {
       const prompt = document.querySelector('#detail-shadowing-bar .shadowing-prompt');
       const textRight = (element) => { const range = document.createRange(); range.selectNodeContents(element); return range.getBoundingClientRect().right; };
@@ -721,7 +722,7 @@ async function main() {
       await new Promise((resolve) => setTimeout(resolve, 180));
       return window.__VIDEO_PLAYER__.time === time && !window.__VIDEO_PLAYER__.playing;
     })()`);
-    await cdp.waitFor(`document.querySelector('#detail-en .word.shadow-next').dataset.ipa.includes('/')`);
+    await cdp.waitFor(`document.querySelector('#detail-shadowing-bar .shadowing-ipa').textContent.includes('/')`);
     await cdp.evaluate(`(() => {
       window.__EXAMPLE_PROGRESS__ = document.querySelector('#detail-shadowing-bar progress').value;
       window.__EXAMPLE_TIME__ = window.__VIDEO_PLAYER__.time;
@@ -1025,8 +1026,22 @@ async function main() {
     shadowingChecks.podcastStartsSilent = await cdp.evaluate(`document.getElementById('podcast-audio').muted && document.getElementById('podcast-audio').paused && document.getElementById('podcast-speed').disabled`);
     await cdp.evaluate(`window.__SPEECH_INSTANCES__.at(-1).emit('Cities should abandon')`);
     shadowingChecks.podcastVoiceHighlights = await cdp.evaluate(`document.querySelector('#podcast-en .word.active')?.textContent === 'abandon' && document.getElementById('podcast-audio').currentTime > 1 && document.getElementById('podcast-audio').paused`);
-    await cdp.waitFor(`document.querySelector('#podcast-en .word.shadow-next').dataset.ipa.includes('/')`);
+    await cdp.waitFor(`document.querySelector('#podcast-shadowing-bar .shadowing-ipa').textContent.includes('/')`);
     shadowingChecks.podcastNextWordHasIpa = await cdp.evaluate(`document.querySelector('#podcast-shadowing-bar .shadowing-ipa').textContent.includes('/') && !document.querySelector('#podcast-shadowing-bar .shadowing-pronounce').disabled`);
+    shadowingChecks.podcastNoInlineIpa = await cdp.evaluate(`(() => {
+      const next = document.querySelector('#podcast-en .word.shadow-next');
+      const words = [...next.closest('.podcast-cue').querySelectorAll('.word')];
+      const positions = () => words.map(word => {
+        const rect = word.getBoundingClientRect();
+        return [rect.left, rect.top, rect.width, rect.height];
+      });
+      const before = JSON.stringify(positions());
+      const noInlineIpa = !document.querySelector('#podcast-en [data-ipa]');
+      next.dataset.ipa = '/a deliberately long pronunciation/';
+      const stable = JSON.stringify(positions()) === before && ['none', 'normal'].includes(getComputedStyle(next, '::after').content);
+      next.removeAttribute('data-ipa');
+      return noInlineIpa && stable;
+    })()`);
     await cdp.evaluate(`(() => {
       window.__PODCAST_EXAMPLE_TIME__ = document.getElementById('podcast-audio').currentTime;
       window.__PODCAST_EXAMPLE_PROGRESS__ = document.querySelector('#podcast-shadowing-bar progress').value;

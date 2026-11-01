@@ -351,10 +351,6 @@ function updatePracticePronunciation(reading) {
   setI18nAttribute(view.pronounce, 'aria-label', label);
   view.pronounce.classList.toggle('is-playing', reading.exampleActive);
   view.pronounce.innerHTML = icon(reading.exampleActive ? 'stop' : 'volume', 17);
-  if (reading.nextNode) {
-    reading.nextNode.dataset.ipa = reading.ipa[0] || '';
-    reading.nextNode.title = `${word}${reading.ipa.length ? ` ${reading.ipa.join('，')}` : ''}`;
-  }
 }
 
 function updatePracticeControls() {
