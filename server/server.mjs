@@ -291,11 +291,26 @@ function validateOrigin(req) {
 async function sendMedia(req, res, response, headers) {
   res.writeHead(response.status, { ...SECURITY_HEADERS, ...headers });
   if (req.method === 'HEAD' || !response.body) {
-    await response.body?.cancel();
+    try { await response.body?.cancel(); } catch { /* ignore */ }
     res.end();
     return;
   }
-  await pipeline(Readable.fromWeb(response.body), res);
+  const stream = Readable.fromWeb(response.body);
+  const fail = (error) => {
+    if (error && error.name !== 'AbortError' && error.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+      console.error('[media]', error.message || error);
+    }
+    if (!res.destroyed) res.destroy();
+  };
+  stream.on('error', fail);
+  res.on('close', () => {
+    if (!stream.destroyed) stream.destroy();
+  });
+  try {
+    await pipeline(stream, res);
+  } catch (error) {
+    fail(error);
+  }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -460,6 +475,15 @@ server.listen(PORT, HOST, () => {
   console.log('  EnOS · YouTube / 播客 / 图书');
   console.log(`  http://${HOST}:${PORT}`);
   console.log('');
+});
+
+// A client closing an audio/book range request must not take down the whole
+// local server. Log the failure, keep serving other requests.
+process.on('uncaughtException', (error) => {
+  console.error('[uncaught]', error?.stack || error);
+});
+process.on('unhandledRejection', (error) => {
+  console.error('[unhandled-rejection]', error?.stack || error);
 });
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
